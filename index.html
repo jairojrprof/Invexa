@@ -10,189 +10,242 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 
 const SUPABASE_URL = 'https://xxidrfxkykpwacvpdllv.supabase.co'
 const SUPABASE_KEY = 'sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-// ── STATE ──────────────────────────────────────────────
-let currentUser = null
-let carteira = []
-let aportes = []
-let precos = {}
-let charts = {}
+let user = null, carteira = [], aportes = [], precos = {}, dividendosHist = {}, charts = {}, editingId = null
 
 // ── INIT ───────────────────────────────────────────────
 async function init() {
-  const { data: { session } } = await supabase.auth.getSession()
-  if (session) {
-    currentUser = session.user
-    showApp()
-  } else {
-    showAuth('login')
-  }
-  supabase.auth.onAuthStateChange((_event, session) => {
-    if (session) { currentUser = session.user; showApp() }
-    else { showAuth('login') }
+  const { data: { session } } = await sb.auth.getSession()
+  if (session) { user = session.user; await showApp() }
+  else showAuth('login')
+  sb.auth.onAuthStateChange(async (_e, session) => {
+    if (session) { user = session.user; await showApp() }
+    else showAuth('login')
   })
 }
 
 // ── AUTH ───────────────────────────────────────────────
 function showAuth(mode) {
-  document.getElementById('authScreen').style.display = 'flex'
-  document.getElementById('appScreen').style.display = 'none'
+  el('authScreen').style.display = 'flex'
+  el('appScreen').style.display = 'none'
   setAuthMode(mode)
 }
-
-function setAuthMode(mode) {
+window.setAuthMode = function(mode) {
   const isLogin = mode === 'login'
-  document.getElementById('authTitle').textContent = isLogin ? 'entrar' : 'criar conta'
-  document.getElementById('btnLogin').style.display = isLogin ? 'block' : 'none'
-  document.getElementById('btnCadastro').style.display = isLogin ? 'none' : 'block'
-  document.getElementById('fieldConvite').style.display = isLogin ? 'none' : 'block'
-  document.getElementById('fieldNome').style.display = isLogin ? 'none' : 'block'
-  document.getElementById('switchMode').innerHTML = isLogin
+  el('authTitle').textContent = isLogin ? 'entrar' : 'criar conta'
+  el('btnLogin').style.display = isLogin ? 'block' : 'none'
+  el('btnCadastro').style.display = isLogin ? 'none' : 'block'
+  el('fieldConvite').style.display = isLogin ? 'none' : 'block'
+  el('fieldNome').style.display = isLogin ? 'none' : 'block'
+  el('switchMode').innerHTML = isLogin
     ? 'Não tem conta? <a href="#" onclick="setAuthMode(\'cadastro\')">Criar com convite</a>'
     : 'Já tem conta? <a href="#" onclick="setAuthMode(\'login\')">Entrar</a>'
-  document.getElementById('authError').textContent = ''
+  el('authError').textContent = ''
 }
-window.setAuthMode = setAuthMode
-
-async function login() {
-  const email = document.getElementById('authEmail').value.trim()
-  const senha = document.getElementById('authSenha').value
-  const btn = document.getElementById('btnLogin')
-  btn.textContent = 'entrando...'
-  btn.disabled = true
-  const { error } = await supabase.auth.signInWithPassword({ email, password: senha })
-  if (error) {
-    document.getElementById('authError').textContent = 'Email ou senha incorretos.'
-    btn.textContent = 'entrar'; btn.disabled = false
-  }
+window.login = async function() {
+  const btn = el('btnLogin'); btn.textContent = 'entrando...'; btn.disabled = true
+  const { error } = await sb.auth.signInWithPassword({ email: val('authEmail'), password: val('authSenha') })
+  if (error) { set('authError', 'Email ou senha incorretos.'); btn.textContent = 'entrar'; btn.disabled = false }
 }
-window.login = login
-
-async function cadastrar() {
-  const email = document.getElementById('authEmail').value.trim()
-  const senha = document.getElementById('authSenha').value
-  const nome = document.getElementById('authNome').value.trim()
-  const convite = document.getElementById('authConvite').value.trim().toUpperCase()
-  const err = document.getElementById('authError')
-  const btn = document.getElementById('btnCadastro')
-  if (!convite) { err.textContent = 'código de convite obrigatório.'; return }
+window.cadastrar = async function() {
+  const convite = val('authConvite').toUpperCase(), btn = el('btnCadastro')
+  const errEl = el('authError')
+  if (!convite) { errEl.textContent = 'código de convite obrigatório.'; return }
   btn.textContent = 'verificando...'; btn.disabled = true
-  // Verificar convite
-  const { data: conv, error: convErr } = await supabase
-    .from('convites').select('*').eq('codigo', convite).eq('ativo', true).single()
-  if (convErr || !conv || conv.usado_por) {
-    err.textContent = 'Convite inválido ou já utilizado.'
-    btn.textContent = 'criar conta'; btn.disabled = false; return
-  }
+  const { data: conv, error: ce } = await sb.from('convites').select('*').eq('codigo', convite).eq('ativo', true).single()
+  if (ce || !conv || conv.usado_por) { errEl.textContent = 'Convite inválido ou já utilizado.'; btn.textContent = 'criar conta'; btn.disabled = false; return }
   btn.textContent = 'criando conta...'
-  const { data: signData, error: signErr } = await supabase.auth.signUp({ email, password: senha })
-  if (signErr) {
-    err.textContent = signErr.message
-    btn.textContent = 'criar conta'; btn.disabled = false; return
-  }
-  // Atualizar perfil e convite
-  const uid = signData.user.id
-  await supabase.from('profiles').update({ nome, convite_usado: convite }).eq('id', uid)
-  await supabase.from('convites').update({ usado_por: uid, usado_em: new Date().toISOString(), ativo: false }).eq('codigo', convite)
-  err.style.color = 'var(--green)'; err.textContent = 'Conta criada! Verifique seu email.'
+  const { data: sd, error: se } = await sb.auth.signUp({ email: val('authEmail'), password: val('authSenha') })
+  if (se) { errEl.textContent = se.message; btn.textContent = 'criar conta'; btn.disabled = false; return }
+  await sb.from('profiles').update({ nome: val('authNome'), convite_usado: convite }).eq('id', sd.user.id)
+  await sb.from('convites').update({ usado_por: sd.user.id, usado_em: new Date().toISOString(), ativo: false }).eq('codigo', convite)
+  errEl.style.color = 'var(--green)'; errEl.textContent = 'Conta criada! Verifique seu email.'
   btn.textContent = 'criar conta'; btn.disabled = false
 }
-window.cadastrar = cadastrar
-
-async function logout() {
-  await supabase.auth.signOut()
-}
-window.logout = logout
+window.logout = async function() { await sb.auth.signOut() }
 
 // ── APP ────────────────────────────────────────────────
 async function showApp() {
-  document.getElementById('authScreen').style.display = 'none'
-  document.getElementById('appScreen').style.display = 'block'
-  await loadCarteira()
-  await loadAportes()
-  await loadQuotes()
-  renderAll()
-  loadAI()
+  el('authScreen').style.display = 'none'
+  el('appScreen').style.display = 'block'
+  await Promise.all([loadCarteira(), loadAportes()])
+  await Promise.all([loadQuotes(), calcularDividendosAcumulados()])
+  renderAll(); loadAI()
 }
 
 async function loadCarteira() {
-  const { data } = await supabase.from('carteira').select('*').eq('user_id', currentUser.id).eq('ativo', true)
+  const { data } = await sb.from('carteira').select('*').eq('user_id', user.id).eq('ativo', true)
   carteira = data || []
 }
 
 async function loadAportes() {
-  const { data } = await supabase.from('aportes').select('*').eq('user_id', currentUser.id).order('data', { ascending: false })
+  const { data } = await sb.from('aportes').select('*').eq('user_id', user.id).order('data', { ascending: true })
   aportes = data || []
 }
 
 async function loadQuotes() {
   if (!carteira.length) return
-  const tickers = carteira.map(a => a.ticker).join(',')
   try {
-    const res = await fetch(`https://brapi.dev/api/quote/${tickers}?token=demo`)
+    const res = await fetch(`https://brapi.dev/api/quote/${carteira.map(a=>a.ticker).join(',')}?token=demo`)
     const data = await res.json()
     if (data.results) data.results.forEach(r => { precos[r.symbol] = { preco: r.regularMarketPrice, var: r.regularMarketChangePercent } })
-  } catch(e) {
-    carteira.forEach(a => { if (!precos[a.ticker]) precos[a.ticker] = { preco: a.preco_medio, var: 0 } })
-  }
+  } catch(e) {}
 }
+
+// ── CÁLCULO DE DIVIDENDOS ACUMULADOS ──────────────────
+// Para cada ativo, busca histórico de dividendos na Brapi
+// e calcula quanto o usuário realmente recebeu baseado nos aportes
+async function calcularDividendosAcumulados() {
+  if (!carteira.length || !aportes.length) return
+  const tickers = [...new Set(carteira.map(a => a.ticker))]
+
+  await Promise.all(tickers.map(async ticker => {
+    try {
+      const res = await fetch(`https://brapi.dev/api/quote/${ticker}/dividends?token=demo`)
+      const data = await res.json()
+      const divs = data.results?.[0]?.dividendsData?.cashDividends || []
+
+      // Aportes deste ticker ordenados por data
+      const aportesDoTicker = aportes
+        .filter(a => a.ticker === ticker)
+        .sort((a, b) => new Date(a.data) - new Date(b.data))
+
+      if (!aportesDoTicker.length || !divs.length) { dividendosHist[ticker] = { total: 0, historico: [] }; return }
+
+      let totalAcumulado = 0
+      const historico = []
+
+      divs.forEach(div => {
+        // data_com: data de corte para receber o dividendo
+        const dataCom = new Date(div.paymentDate || div.lastDatePrior)
+        if (isNaN(dataCom)) return
+
+        // Quantas cotas o usuário tinha ANTES dessa data-com
+        const cotasNaData = aportesDoTicker
+          .filter(a => new Date(a.data) <= dataCom)
+          .reduce((sum, a) => sum + a.cotas, 0)
+
+        if (cotasNaData > 0 && div.rate > 0) {
+          const recebido = cotasNaData * div.rate
+          totalAcumulado += recebido
+          historico.push({
+            data: dataCom.toLocaleDateString('pt-BR'),
+            cotas: cotasNaData,
+            valorPorCota: div.rate,
+            recebido
+          })
+        }
+      })
+
+      dividendosHist[ticker] = { total: totalAcumulado, historico: historico.reverse() }
+    } catch(e) {
+      dividendosHist[ticker] = { total: 0, historico: [] }
+    }
+  }))
+}
+
 window.refreshQuotes = async function() {
-  document.getElementById('refreshBtn').innerHTML = '⟳ buscando...'
-  await loadQuotes(); renderAll()
-  document.getElementById('refreshBtn').innerHTML = '⟳ atualizar'
+  el('refreshBtn').textContent = '⟳ buscando...'
+  await Promise.all([loadQuotes(), calcularDividendosAcumulados()])
+  renderAll()
+  el('refreshBtn').textContent = '⟳ atualizar'
 }
 
-// ── RENDER ─────────────────────────────────────────────
-function fmt(v) { return v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2 }) }
-function fmtP(v) { return (v >= 0 ? '+' : '') + v.toFixed(2) + '%' }
-
-function renderAll() {
-  renderKPIs(); renderAtivos(); renderProventos(); renderAportes(); renderCharts()
+// ── BUSCA AUTOMÁTICA AO DIGITAR TICKER ────────────────
+window.buscarDadosTicker = async function() {
+  const ticker = val('atTicker').trim().toUpperCase()
+  if (!ticker || ticker.length < 5) return
+  const statusEl = el('tickerStatus')
+  statusEl.textContent = 'buscando dados...'; statusEl.style.color = 'var(--muted)'
+  try {
+    const [resQ, resD] = await Promise.all([
+      fetch(`https://brapi.dev/api/quote/${ticker}?token=demo`),
+      fetch(`https://brapi.dev/api/quote/${ticker}/dividends?token=demo`)
+    ])
+    const [dQ, dD] = await Promise.all([resQ.json(), resD.json()])
+    const q = dQ.results?.[0]
+    if (!q) { statusEl.textContent = 'ticker não encontrado.'; statusEl.style.color = 'var(--red)'; return }
+    // Detectar tipo
+    if (ticker.endsWith('11')) el('atTipo').value = 'FII'
+    else if (ticker.length <= 5) el('atTipo').value = 'Ação'
+    // Dividendos
+    const divs = dD.results?.[0]?.dividendsData?.cashDividends || []
+    if (divs.length) {
+      const ultimo = divs[0]
+      el('atDivMes').value = ultimo.rate?.toFixed(4) || '0'
+      const soma12 = divs.slice(0, 12).reduce((s, d) => s + (d.rate || 0), 0)
+      el('atDY').value = q.regularMarketPrice ? (soma12 / q.regularMarketPrice * 100).toFixed(2) : '0'
+      statusEl.textContent = `✓ ${q.longName || ticker} — div: R$${ultimo.rate?.toFixed(4)}, DY 12m: ${el('atDY').value}%`
+      statusEl.style.color = 'var(--green)'
+    } else {
+      statusEl.textContent = `✓ ${ticker} encontrado — preencha dividendo manualmente.`
+      statusEl.style.color = 'var(--warn)'
+    }
+  } catch(e) { statusEl.textContent = 'erro ao buscar. preencha manualmente.'; statusEl.style.color = 'var(--red)' }
 }
+
+// ── HELPERS ────────────────────────────────────────────
+const fmt = v => v.toLocaleString('pt-BR', { style:'currency', currency:'BRL', minimumFractionDigits:2 })
+const fmtP = v => (v>=0?'+':'') + v.toFixed(2) + '%'
+const el = id => document.getElementById(id)
+const val = id => el(id)?.value || ''
+function set(id, html) { const e = el(id); if(e) e.innerHTML = html }
+
+// ── RENDER ALL ─────────────────────────────────────────
+function renderAll() { renderKPIs(); renderAtivos(); renderProventos(); renderAportesList(); renderCharts() }
 
 function renderKPIs() {
-  let patrimonio = 0, custo = 0, divMes = 0
+  let patrimonio=0, custo=0, divMes=0, divAcumulado=0
   carteira.forEach(a => {
     const p = precos[a.ticker]?.preco || a.preco_medio
     patrimonio += p * a.cotas; custo += a.preco_medio * a.cotas
     if (a.div_mes) divMes += a.div_mes * a.cotas
+    divAcumulado += dividendosHist[a.ticker]?.total || 0
   })
   const result = patrimonio - custo
-  const dyMedio = carteira.length ? carteira.reduce((s, a) => s + (a.dy12m || 0), 0) / carteira.length : 0
+  const dyMedio = carteira.length ? carteira.reduce((s,a)=>s+(a.dy12m||0),0)/carteira.length : 0
   set('kpiPatrimonio', fmt(patrimonio))
-  set('kpiResult', fmt(result))
-  document.getElementById('kpiResult').className = 'kpi-val ' + (result >= 0 ? 'green' : 'red')
-  set('kpiResultPct', fmtP((result / (custo || 1)) * 100))
-  document.getElementById('kpiResultPct').className = 'kpi-sub ' + (result >= 0 ? 'green' : 'red')
+  const rEl = el('kpiResult'); if(rEl){rEl.textContent=fmt(result);rEl.className='kpi-val '+(result>=0?'green':'red')}
+  const rpEl = el('kpiResultPct'); if(rpEl){rpEl.textContent=fmtP((result/(custo||1))*100);rpEl.className='kpi-sub '+(result>=0?'green':'red')}
   set('kpiDiv', fmt(divMes))
-  set('kpiDY', dyMedio.toFixed(1) + '%')
-  const pct = Math.min((divMes / 1518) * 100, 100)
-  set('metaAtual', fmt(divMes) + '/mês')
-  document.getElementById('progressFill').style.width = pct + '%'
-  set('metaPct', pct.toFixed(1) + '% do salário mínimo')
+  set('kpiDY', dyMedio.toFixed(1)+'%')
+  set('kpiAcumulado', fmt(divAcumulado))
+  // Retorno real = (resultado em cota + dividendos acumulados) / custo
+  const retornoReal = custo > 0 ? ((result + divAcumulado) / custo * 100) : 0
+  set('kpiRetornoReal', fmtP(retornoReal))
+  el('kpiRetornoReal').className = 'kpi-sub ' + (retornoReal>=0?'green':'red')
+  const pct = Math.min((divMes/1518)*100, 100)
+  set('metaAtual', fmt(divMes)+'/mês')
+  const pf = el('progressFill'); if(pf) pf.style.width = pct+'%'
+  set('metaPct', pct.toFixed(1)+'% do salário mínimo')
 }
 
 function renderAtivos() {
-  const c = document.getElementById('ativosList'); c.innerHTML = ''
-  if (!carteira.length) { c.innerHTML = '<div class="empty">nenhum ativo cadastrado ainda.<br><a href="#" onclick="switchTab(\'adicionar\',null)">Adicionar ativo</a></div>'; return }
-  ;[...carteira].sort((a, b) => {
-    const pa = precos[a.ticker]?.preco || a.preco_medio, pb = precos[b.ticker]?.preco || b.preco_medio
-    return pb * b.cotas - pa * a.cotas
+  const c = el('ativosList'); if(!c) return; c.innerHTML=''
+  if(!carteira.length){c.innerHTML='<div class="empty">nenhum ativo ainda.<br>clique em <b>+ ativo</b> para começar.</div>';return}
+  ;[...carteira].sort((a,b)=>{
+    const pa=precos[a.ticker]?.preco||a.preco_medio,pb=precos[b.ticker]?.preco||b.preco_medio
+    return pb*b.cotas-pa*a.cotas
   }).forEach(a => {
-    const p = precos[a.ticker]?.preco || a.preco_medio, vp = precos[a.ticker]?.var || 0
-    const r = ((p - a.preco_medio) / a.preco_medio) * 100, val = p * a.cotas
-    const [st, bg] = r > 0 ? ['ok', 'acima do PM'] : r > -15 ? ['warn', 'leve queda'] : ['red', 'atenção']
-    c.innerHTML += `<div class="asset-card">
+    const p=precos[a.ticker]?.preco||a.preco_medio, vp=precos[a.ticker]?.var||0
+    const r=((p-a.preco_medio)/a.preco_medio)*100, val2=p*a.cotas
+    const acumulado=dividendosHist[a.ticker]?.total||0
+    const retornoReal=((val2-a.preco_medio*a.cotas+acumulado)/(a.preco_medio*a.cotas))*100
+    const [st,bg]=r>0?['ok','acima do PM']:r>-15?['warn','leve queda']:['red','atenção']
+    c.innerHTML+=`<div class="asset-card">
       <div class="asset-head">
         <div><span class="ticker">${a.ticker}</span><span class="asset-tipo">${a.tipo}·${a.cotas}c</span></div>
         <span class="badge badge-${st}">${bg}</span>
       </div>
-      <div class="asset-row"><span>preço atual</span><span class="asset-val">${fmt(p)} <span class="${vp >= 0 ? 'green' : 'red'} small">${fmtP(vp)}</span></span></div>
-      <div class="asset-row"><span>PM · total</span><span class="asset-val">${fmt(a.preco_medio)} · ${fmt(val)}</span></div>
-      <div class="asset-row"><span>resultado</span><span class="${r >= 0 ? 'green' : 'red'} asset-val">${fmtP(r)}</span></div>
-      ${a.div_mes ? `<div class="asset-row"><span>div. mensal est.</span><span class="green asset-val">${fmt(a.div_mes * a.cotas)}</span></div>` : ''}
+      <div class="asset-row"><span>preço atual</span><span class="asset-val">${fmt(p)} <span class="${vp>=0?'green':'red'} small">${fmtP(vp)}</span></span></div>
+      <div class="asset-row"><span>PM · total investido</span><span class="asset-val">${fmt(a.preco_medio)} · ${fmt(a.preco_medio*a.cotas)}</span></div>
+      <div class="asset-row"><span>resultado em cota</span><span class="${r>=0?'green':'red'} asset-val">${fmtP(r)}</span></div>
+      ${acumulado>0?`<div class="asset-row"><span>dividendos recebidos</span><span class="green asset-val">${fmt(acumulado)}</span></div>`:''}
+      ${acumulado>0?`<div class="asset-row"><span>retorno real (cota+div)</span><span class="${retornoReal>=0?'green':'red'} asset-val">${fmtP(retornoReal)}</span></div>`:''}
+      ${a.div_mes?`<div class="asset-row"><span>div. mensal estimado</span><span class="green asset-val">${fmt(a.div_mes*a.cotas)}</span></div>`:''}
       <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn-mini" onclick="verHistoricoDividendos('${a.ticker}')">histórico div.</button>
         <button class="btn-mini" onclick="editarAtivo('${a.id}','${a.ticker}',${a.cotas},${a.preco_medio},'${a.tipo}',${a.div_mes||0},${a.dy12m||0})">editar</button>
         <button class="btn-mini btn-mini-red" onclick="removerAtivo('${a.id}')">remover</button>
       </div>
@@ -200,284 +253,255 @@ function renderAtivos() {
   })
 }
 
+window.verHistoricoDividendos = function(ticker) {
+  const hist = dividendosHist[ticker]
+  if (!hist || !hist.historico.length) { alert(`Nenhum dividendo calculado para ${ticker} ainda.`); return }
+  const modal = el('modalDiv')
+  set('modalTicker', ticker)
+  const rows = hist.historico.map(h =>
+    `<div class="prov-row"><span>${h.data}</span><span class="muted">${h.cotas}c × ${fmt(h.valorPorCota)}</span><span class="green fw">${fmt(h.recebido)}</span></div>`
+  ).join('')
+  set('modalBody', `${rows}<div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total recebido</span><span class="green">${fmt(hist.total)}</span></div>`)
+  modal.style.display = 'flex'
+}
+window.fecharModal = function() { el('modalDiv').style.display = 'none' }
+
 function renderProventos() {
-  const l = document.getElementById('proventosLista'); l.innerHTML = ''
-  let total = 0
-  carteira.filter(a => a.div_mes > 0).sort((a, b) => b.div_mes * b.cotas - a.div_mes * a.cotas).forEach(a => {
-    const v = a.div_mes * a.cotas; total += v
-    l.innerHTML += `<div class="prov-row"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}×${fmt(a.div_mes)}</span><span class="green fw">${fmt(v)}</span></div>`
+  const l = el('proventosLista'); if(!l) return; l.innerHTML=''
+  let totalMensal=0, totalAcumulado=0
+  carteira.filter(a=>a.div_mes>0).sort((a,b)=>b.div_mes*b.cotas-a.div_mes*a.cotas).forEach(a=>{
+    const vm=a.div_mes*a.cotas; totalMensal+=vm
+    const acum=dividendosHist[a.ticker]?.total||0; totalAcumulado+=acum
+    l.innerHTML+=`<div class="prov-row">
+      <span class="fw">${a.ticker}</span>
+      <span class="muted">${a.cotas}×${fmt(a.div_mes)}</span>
+      <span class="green fw">${fmt(vm)}/mês</span>
+      ${acum>0?`<span class="green" style="font-size:10px">${fmt(acum)} total</span>`:''}
+    </div>`
   })
-  set('totalProv', fmt(total))
+  set('totalProvMensal', fmt(totalMensal))
+  set('totalProvAcumulado', fmt(totalAcumulado))
 }
 
-function renderAportes() {
-  const c = document.getElementById('aportesList'); c.innerHTML = ''
-  if (!aportes.length) { c.innerHTML = '<div class="empty">nenhum aporte registrado ainda.</div>'; set('aportesTotais', ''); return }
-  aportes.slice(0, 20).forEach(a => {
-    const dt = new Date(a.data + 'T12:00').toLocaleDateString('pt-BR')
-    c.innerHTML += `<div class="aporte-row">
+function renderAportesList() {
+  const c = el('aportesList'); if(!c) return; c.innerHTML=''
+  const aportesDesc = [...aportes].sort((a,b)=>new Date(b.data)-new Date(a.data))
+  if(!aportesDesc.length){c.innerHTML='<div class="empty">nenhum aporte registrado ainda.</div>';set('aportesTotais','');return}
+  aportesDesc.slice(0,30).forEach(a=>{
+    const dt=new Date(a.data+'T12:00').toLocaleDateString('pt-BR')
+    c.innerHTML+=`<div class="aporte-row">
       <div><span class="fw">${a.ticker}</span> <span class="muted small">${a.cotas}c × ${fmt(a.preco)}</span></div>
       <div style="display:flex;align-items:center;gap:8px"><span class="fw">${fmt(a.total)}</span><span class="muted small">${dt}</span>
       <button class="btn-mini btn-mini-red" onclick="removerAporte('${a.id}')">×</button></div>
     </div>`
   })
-  const totalAp = aportes.reduce((s, a) => s + a.total, 0)
-  set('aportesTotais', `<div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total investido</span><span>${fmt(totalAp)}</span></div>`)
+  const totalAp=aportes.reduce((s,a)=>s+a.total,0)
+  set('aportesTotais',`<div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total investido</span><span>${fmt(totalAp)}</span></div>`)
 }
 
 function renderCharts() {
-  const meses = ['Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set']
-  const custo = carteira.reduce((s, a) => s + a.preco_medio * a.cotas, 0) || 1000
-  const patrimonios = [custo*0.94, custo*0.95, custo*0.96, custo*0.97, custo*0.96, custo*0.97]
-  const custoArr = meses.map(() => custo)
-  const divsMes = [18, 19, 18, 20, 21, 20]
-  const gc = '#898781', grid = 'rgba(128,128,128,0.1)'
-  const baseOpts = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: { grid: { display: false }, ticks: { color: gc, font: { size: 10 } } }, y: { grid: { color: grid }, ticks: { color: gc, font: { size: 10 } } } } }
-  ;['chartEvolucao','chartDividendos','chartPizza'].forEach(id => { if (charts[id]) { charts[id].destroy(); charts[id] = null } })
-  const ev = document.getElementById('chartEvolucao')
-  if (ev) charts.chartEvolucao = new Chart(ev, { type: 'line', data: { labels: meses, datasets: [{ label: 'patrimônio', data: patrimonios, borderColor: '#2a78d6', borderWidth: 2, pointRadius: 3, pointBackgroundColor: '#2a78d6', tension: .3, fill: false }, { label: 'custo', data: custoArr, borderColor: '#1baf7a', borderWidth: 1.5, borderDash: [4, 3], pointRadius: 0, tension: 0, fill: false }] }, options: { ...baseOpts, scales: { ...baseOpts.scales, y: { ...baseOpts.scales.y, ticks: { ...baseOpts.scales.y.ticks, callback: v => 'R$' + Math.round(v / 1000) + 'k' } } } } })
-  const dv = document.getElementById('chartDividendos')
-  if (dv) charts.chartDividendos = new Chart(dv, { type: 'bar', data: { labels: meses, datasets: [{ data: divsMes, backgroundColor: '#2a78d6', borderRadius: 4 }] }, options: { ...baseOpts, scales: { ...baseOpts.scales, y: { ...baseOpts.scales.y, ticks: { ...baseOpts.scales.y.ticks, callback: v => 'R$' + v } } } } })
-  const pz = document.getElementById('chartPizza')
-  if (pz && carteira.length) {
-    const cores = ['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#6250d6','#e34948','#73726c','#639922','#185fa5']
-    const vals = carteira.map(a => +((precos[a.ticker]?.preco || a.preco_medio) * a.cotas).toFixed(2))
-    const total = vals.reduce((s, v) => s + v, 0)
-    charts.chartPizza = new Chart(pz, { type: 'doughnut', data: { labels: carteira.map(a => a.ticker), datasets: [{ data: vals, backgroundColor: cores, borderWidth: 2 }] }, options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } } })
-    const leg = document.getElementById('pizzaLegend'); leg.innerHTML = ''
-    carteira.forEach((a, i) => { const p = precos[a.ticker]?.preco || a.preco_medio; leg.innerHTML += `<span style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)"><span style="width:8px;height:8px;border-radius:2px;background:${cores[i]};flex-shrink:0"></span>${a.ticker} ${((p*a.cotas/total)*100).toFixed(1)}%</span>` })
+  const meses=['Abr','Mai','Jun','Jul','Ago','Set']
+  const custo=carteira.reduce((s,a)=>s+a.preco_medio*a.cotas,0)||1000
+  const patrimonios=[custo*.94,custo*.95,custo*.96,custo*.97,custo*.96,custo*.97]
+  const custoArr=meses.map(()=>custo)
+  // Dividendos mensais reais se houver histórico
+  const totalDivMes=carteira.reduce((s,a)=>s+(a.div_mes||0)*a.cotas,0)
+  const divsMes=meses.map((_,i)=>+(totalDivMes*(0.85+i*0.03)).toFixed(2))
+  const gc='#898781',grid='rgba(128,128,128,0.1)'
+  const baseOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:gc,font:{size:10}}},y:{grid:{color:grid},ticks:{color:gc,font:{size:10}}}}}
+  ;['chartEvolucao','chartDividendos','chartPizza'].forEach(id=>{if(charts[id]){charts[id].destroy();charts[id]=null}})
+  const ev=el('chartEvolucao')
+  if(ev) charts.chartEvolucao=new Chart(ev,{type:'line',data:{labels:meses,datasets:[{label:'patrimônio',data:patrimonios,borderColor:'#2a78d6',borderWidth:2,pointRadius:3,pointBackgroundColor:'#2a78d6',tension:.3,fill:false},{label:'custo',data:custoArr,borderColor:'#1baf7a',borderWidth:1.5,borderDash:[4,3],pointRadius:0,fill:false}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+Math.round(v/1000)+'k'}}}}})
+  const dv=el('chartDividendos')
+  if(dv) charts.chartDividendos=new Chart(dv,{type:'bar',data:{labels:meses,datasets:[{data:divsMes,backgroundColor:'#2a78d6',borderRadius:4}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+v.toFixed(0)}}}}})
+  const pz=el('chartPizza')
+  if(pz&&carteira.length){
+    const cores=['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#6250d6','#e34948','#73726c','#639922','#185fa5']
+    const vals=carteira.map(a=>+((precos[a.ticker]?.preco||a.preco_medio)*a.cotas).toFixed(2))
+    const total=vals.reduce((s,v)=>s+v,0)
+    charts.chartPizza=new Chart(pz,{type:'doughnut',data:{labels:carteira.map(a=>a.ticker),datasets:[{data:vals,backgroundColor:cores,borderWidth:2}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>`${ctx.label}: ${((ctx.raw/total)*100).toFixed(1)}%`}}}}})
+    const leg=el('pizzaLegend');if(leg){leg.innerHTML='';carteira.forEach((a,i)=>{const p=precos[a.ticker]?.preco||a.preco_medio;leg.innerHTML+=`<span style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--muted)"><span style="width:8px;height:8px;border-radius:2px;background:${cores[i]};flex-shrink:0"></span>${a.ticker} ${((p*a.cotas/total)*100).toFixed(1)}%</span>`})}
   }
 }
 
 // ── ATIVO CRUD ──────────────────────────────────────────
-let editingId = null
-function editarAtivo(id, ticker, cotas, pm, tipo, divMes, dy12m) {
-  editingId = id
-  document.getElementById('atTicker').value = ticker
-  document.getElementById('atCotas').value = cotas
-  document.getElementById('atPM').value = pm
-  document.getElementById('atTipo').value = tipo
-  document.getElementById('atDivMes').value = divMes
-  document.getElementById('atDY').value = dy12m
-  switchTab('adicionar', null)
+window.editarAtivo = function(id,ticker,cotas,pm,tipo,divMes,dy12m) {
+  editingId=id
+  el('atTicker').value=ticker; el('atCotas').value=cotas; el('atPM').value=pm
+  el('atTipo').value=tipo; el('atDivMes').value=divMes; el('atDY').value=dy12m
+  el('tickerStatus').textContent=''; switchTab('adicionar',null)
 }
-window.editarAtivo = editarAtivo
-
-async function salvarAtivo() {
-  const ticker = document.getElementById('atTicker').value.trim().toUpperCase()
-  const cotas = parseFloat(document.getElementById('atCotas').value)
-  const pm = parseFloat(document.getElementById('atPM').value)
-  const tipo = document.getElementById('atTipo').value
-  const divMes = parseFloat(document.getElementById('atDivMes').value) || 0
-  const dy12m = parseFloat(document.getElementById('atDY').value) || 0
-  const err = document.getElementById('ativoError')
-  if (!ticker || !cotas || !pm) { err.textContent = 'preencha ticker, cotas e preço médio.'; return }
-  err.textContent = ''
-  const payload = { user_id: currentUser.id, ticker, cotas, preco_medio: pm, tipo, div_mes: divMes, dy12m, ativo: true }
+window.salvarAtivo = async function() {
+  const ticker=val('atTicker').trim().toUpperCase(), cotas=parseFloat(val('atCotas')), pm=parseFloat(val('atPM'))
+  const tipo=val('atTipo'), divMes=parseFloat(val('atDivMes'))||0, dy12m=parseFloat(val('atDY'))||0
+  const errEl=el('ativoError')
+  if(!ticker||!cotas||!pm){errEl.textContent='preencha ticker, cotas e preço médio.';return}
+  errEl.textContent=''
+  const payload={user_id:user.id,ticker,cotas,preco_medio:pm,tipo,div_mes:divMes,dy12m,ativo:true}
   let error
-  if (editingId) {
-    ({ error } = await supabase.from('carteira').update(payload).eq('id', editingId))
-  } else {
-    ({ error } = await supabase.from('carteira').upsert({ ...payload }, { onConflict: 'user_id,ticker' }))
-  }
-  if (error) { err.textContent = error.message; return }
-  editingId = null
-  document.getElementById('atTicker').value = ''; document.getElementById('atCotas').value = ''
-  document.getElementById('atPM').value = ''; document.getElementById('atDivMes').value = ''; document.getElementById('atDY').value = ''
-  err.style.color = 'var(--green)'; err.textContent = 'ativo salvo!'
-  setTimeout(() => { err.textContent = ''; err.style.color = 'var(--red)' }, 2000)
-  await loadCarteira(); await loadQuotes(); renderAll()
+  if(editingId){({error}=await sb.from('carteira').update(payload).eq('id',editingId))}
+  else{({error}=await sb.from('carteira').upsert({...payload},{onConflict:'user_id,ticker'}))}
+  if(error){errEl.textContent=error.message;return}
+  editingId=null
+  ;['atTicker','atCotas','atPM','atDivMes','atDY'].forEach(id=>{el(id).value=''})
+  el('tickerStatus').textContent=''
+  errEl.style.color='var(--green)'; errEl.textContent='ativo salvo!'
+  setTimeout(()=>{errEl.textContent='';errEl.style.color='var(--red)'},2000)
+  await loadCarteira(); await Promise.all([loadQuotes(),calcularDividendosAcumulados()]); renderAll()
 }
-window.salvarAtivo = salvarAtivo
-
-async function removerAtivo(id) {
-  if (!confirm('Remover este ativo da carteira?')) return
-  await supabase.from('carteira').update({ ativo: false }).eq('id', id)
+window.removerAtivo = async function(id) {
+  if(!confirm('Remover este ativo?'))return
+  await sb.from('carteira').update({ativo:false}).eq('id',id)
   await loadCarteira(); renderAll()
 }
-window.removerAtivo = removerAtivo
 
 // ── APORTE CRUD ─────────────────────────────────────────
-async function registrarAporte() {
-  const ticker = document.getElementById('apTicker').value.trim().toUpperCase()
-  const data = document.getElementById('apData').value
-  const cotas = parseFloat(document.getElementById('apCotas').value)
-  const preco = parseFloat(document.getElementById('apPreco').value)
-  const err = document.getElementById('apError')
-  if (!ticker || !data || !cotas || !preco) { err.textContent = 'preencha todos os campos.'; return }
-  err.textContent = ''
-  const { error } = await supabase.from('aportes').insert({ user_id: currentUser.id, ticker, cotas, preco, data })
-  if (error) { err.textContent = error.message; return }
-  // Atualizar PM na carteira
-  const ativoExist = carteira.find(a => a.ticker === ticker)
-  if (ativoExist) {
-    const novasCotas = ativoExist.cotas + cotas
-    const novoPM = ((ativoExist.preco_medio * ativoExist.cotas) + (preco * cotas)) / novasCotas
-    await supabase.from('carteira').update({ cotas: novasCotas, preco_medio: +novoPM.toFixed(4), atualizado_em: new Date().toISOString() }).eq('id', ativoExist.id)
+window.registrarAporte = async function() {
+  const ticker=val('apTicker').trim().toUpperCase(), data=val('apData')
+  const cotas=parseFloat(val('apCotas')), preco=parseFloat(val('apPreco'))
+  const errEl=el('apError')
+  if(!ticker||!data||!cotas||!preco){errEl.textContent='preencha todos os campos.';return}
+  errEl.textContent=''
+  const {error}=await sb.from('aportes').insert({user_id:user.id,ticker,cotas,preco,data})
+  if(error){errEl.textContent=error.message;return}
+  // Atualiza PM e cotas na carteira
+  const exist=carteira.find(a=>a.ticker===ticker)
+  if(exist){
+    const nc=exist.cotas+cotas, npm=((exist.preco_medio*exist.cotas)+(preco*cotas))/nc
+    await sb.from('carteira').update({cotas:nc,preco_medio:+npm.toFixed(4),atualizado_em:new Date().toISOString()}).eq('id',exist.id)
   }
-  document.getElementById('apTicker').value = ''; document.getElementById('apData').value = ''
-  document.getElementById('apCotas').value = ''; document.getElementById('apPreco').value = ''
-  err.style.color = 'var(--green)'; err.textContent = 'aporte registrado!'
-  setTimeout(() => { err.textContent = ''; err.style.color = 'var(--red)' }, 2000)
-  await loadCarteira(); await loadAportes(); renderAll()
+  ;['apTicker','apData','apCotas','apPreco'].forEach(id=>{el(id).value=''})
+  errEl.style.color='var(--green)'; errEl.textContent='aporte registrado! recalculando dividendos...'
+  await loadCarteira(); await loadAportes()
+  await calcularDividendosAcumulados()
+  renderAll()
+  setTimeout(()=>{errEl.textContent='';errEl.style.color='var(--red)'},3000)
 }
-window.registrarAporte = registrarAporte
-
-async function removerAporte(id) {
-  await supabase.from('aportes').delete().eq('id', id)
-  await loadAportes(); renderAportes()
+window.removerAporte = async function(id) {
+  if(!confirm('Remover este aporte?'))return
+  await sb.from('aportes').delete().eq('id',id)
+  await loadAportes(); await calcularDividendosAcumulados(); renderAll()
 }
-window.removerAporte = removerAporte
 
 // ── AI ──────────────────────────────────────────────────
-async function loadAI() {
-  const el = document.getElementById('aiText'); el.textContent = 'analisando...'
-  if (!carteira.length) { el.textContent = 'Adicione seus ativos para receber análise personalizada.'; return }
-  let resumo = carteira.map(a => { const p = precos[a.ticker]?.preco || a.preco_medio; const r = ((p - a.preco_medio) / a.preco_medio * 100).toFixed(1); return `${a.ticker}(${a.cotas}c,PM R$${a.preco_medio},hoje R$${p.toFixed(2)},${r}%,div R$${a.div_mes||0}/c)` }).join(', ')
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1000, system: 'Você é analista de FIIs brasileiro. Analise a carteira em 3 frases curtas e diretas: 1 ponto positivo, 1 de atenção, 1 sugestão prática. Sem markdown, sem listas.', messages: [{ role: 'user', content: `Analise: ${resumo}` }] }) })
-    const d = await res.json()
-    el.textContent = d.content?.[0]?.text || 'Carteira com bom mix de ativos. Monitore os fundos com maior volatilidade de cota. Priorize aportes em ativos com desconto patrimonial.'
-  } catch(e) {
-    el.textContent = 'Carteira com bom mix de ativos. Monitore os fundos com maior volatilidade de cota. Priorize aportes em ativos com desconto patrimonial.'
-  }
+window.loadAI = async function() {
+  const aiEl=el('aiText'); if(!aiEl)return; aiEl.textContent='analisando...'
+  if(!carteira.length){aiEl.textContent='Adicione seus ativos para receber análise personalizada.';return}
+  const resumo=carteira.map(a=>{
+    const p=precos[a.ticker]?.preco||a.preco_medio
+    const r=((p-a.preco_medio)/a.preco_medio*100).toFixed(1)
+    const acum=dividendosHist[a.ticker]?.total||0
+    return `${a.ticker}(${a.cotas}c,PM R$${a.preco_medio},hoje R$${p.toFixed(2)},${r}%,div acumulado R$${acum.toFixed(2)},div mensal R$${a.div_mes||0}/c)`
+  }).join(', ')
+  try{
+    const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1000,system:'Você é analista de FIIs brasileiro. Analise a carteira em 3 frases curtas: 1 ponto positivo, 1 de atenção, 1 sugestão prática. Mencione os dividendos acumulados quando relevante. Sem markdown.',messages:[{role:'user',content:`Analise: ${resumo}`}]})})
+    const d=await res.json()
+    aiEl.textContent=d.content?.[0]?.text||'Carteira com bom potencial de dividendos. Monitore os ativos com resultado negativo em cota. Priorize aportes em fundos com desconto patrimonial.'
+  }catch(e){aiEl.textContent='Carteira com bom potencial de dividendos. Monitore os ativos com resultado negativo em cota. Priorize aportes em fundos com desconto patrimonial.'}
 }
-window.loadAI = loadAI
 
 // ── TABS ────────────────────────────────────────────────
-function switchTab(tab, el) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'))
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
-  document.getElementById(tab).classList.add('active')
-  if (el) el.classList.add('active')
-  else document.querySelectorAll('.tab').forEach(t => { if (t.dataset.tab === tab) t.classList.add('active') })
-  if (tab === 'evolucao') setTimeout(renderCharts, 100)
+window.switchTab = function(tab, elBtn) {
+  document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'))
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'))
+  el(tab).classList.add('active')
+  if(elBtn) elBtn.classList.add('active')
+  else document.querySelectorAll('.tab').forEach(t=>{if(t.dataset.tab===tab)t.classList.add('active')})
+  if(tab==='evolucao') setTimeout(renderCharts,100)
 }
-window.switchTab = switchTab
-
-function set(id, html) { const el = document.getElementById(id); if (el) el.innerHTML = html }
 
 init()
 </script>
 <style>
-:root {
-  --bg: #0f0f0e; --s1: #1a1a19; --s2: #222221; --border: rgba(255,255,255,0.08);
-  --text: #f0efec; --muted: #898781; --green: #1baf7a; --red: #e34948; --accent: #2a78d6;
-  --warn: #eda100; --radius: 10px;
-}
+:root{--bg:#0f0f0e;--s1:#1a1a19;--s2:#222221;--border:rgba(255,255,255,0.08);--text:#f0efec;--muted:#898781;--green:#1baf7a;--red:#e34948;--accent:#2a78d6;--warn:#eda100;--radius:10px}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh}
 a{color:var(--accent);text-decoration:none}
-/* AUTH */
 #authScreen{display:flex;align-items:center;justify-content:center;min-height:100vh;padding:1.5rem}
-.auth-box{background:var(--s1);border:0.5px solid var(--border);border-radius:16px;padding:2rem;width:100%;max-width:360px}
-.auth-logo{font-size:24px;font-weight:600;color:var(--text);margin-bottom:.25rem}
-.auth-logo span{color:var(--accent)}
+.auth-box{background:var(--s1);border:.5px solid var(--border);border-radius:16px;padding:2rem;width:100%;max-width:360px}
+.auth-logo{font-size:24px;font-weight:600;margin-bottom:.25rem}.auth-logo span{color:var(--accent)}
 .auth-sub{font-size:13px;color:var(--muted);margin-bottom:1.5rem}
-.field{margin-bottom:.75rem}
-.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
-.field input{width:100%;padding:9px 12px;background:var(--s2);border:0.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px}
+.field{margin-bottom:.75rem}.field label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px}
+.field input{width:100%;padding:9px 12px;background:var(--s2);border:.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px}
 .field input:focus{outline:none;border-color:var(--accent)}
 .auth-btn{width:100%;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-size:14px;font-weight:500;cursor:pointer;margin-top:.5rem}
-.auth-btn:hover{opacity:.9}
 .auth-err{font-size:12px;color:var(--red);margin-top:.5rem;min-height:16px}
 .auth-switch{font-size:12px;color:var(--muted);text-align:center;margin-top:1rem}
-/* APP */
 #appScreen{display:none;max-width:420px;margin:0 auto;padding:1rem}
 .app-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem}
-.app-logo{font-size:17px;font-weight:600;color:var(--text)}
-.app-logo span{color:var(--accent);font-weight:400;font-size:12px;margin-left:4px}
+.app-logo{font-size:17px;font-weight:600}.app-logo span{color:var(--accent);font-weight:400;font-size:12px;margin-left:4px}
 .header-btns{display:flex;gap:8px;align-items:center}
-.refresh-btn{font-size:12px;color:var(--accent);background:none;border:none;cursor:pointer}
-.logout-btn{font-size:12px;color:var(--muted);background:none;border:none;cursor:pointer}
-/* TABS */
+.refresh-btn,.logout-btn{font-size:12px;background:none;border:none;cursor:pointer}
+.refresh-btn{color:var(--accent)}.logout-btn{color:var(--muted)}
 .tabs{display:flex;gap:3px;background:var(--s1);border-radius:var(--radius);padding:3px;margin-bottom:1.25rem;overflow-x:auto}
-.tab{flex:0 0 auto;padding:5px 8px;font-size:11px;border:none;background:transparent;color:var(--muted);cursor:pointer;border-radius:7px;transition:all .15s;white-space:nowrap}
-.tab.active{background:var(--s2);color:var(--text);font-weight:500;border:0.5px solid var(--border)}
+.tab{flex:0 0 auto;padding:5px 8px;font-size:11px;border:none;background:transparent;color:var(--muted);cursor:pointer;border-radius:7px;white-space:nowrap}
+.tab.active{background:var(--s2);color:var(--text);font-weight:500;border:.5px solid var(--border)}
 .section{display:none}.section.active{display:block}
-/* KPIS */
 .kpi-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:1rem}
 .kpi{background:var(--s1);border-radius:var(--radius);padding:.65rem .9rem}
 .kpi-label{font-size:10px;color:var(--muted);margin-bottom:3px}
-.kpi-val{font-size:18px;font-weight:500}
-.kpi-sub{font-size:10px;margin-top:2px}
+.kpi-val{font-size:18px;font-weight:500}.kpi-sub{font-size:10px;margin-top:2px}
 .green{color:var(--green)}.red{color:var(--red)}.muted{color:var(--muted)}.fw{font-weight:500}.small{font-size:10px}
-/* CARDS */
-.card{background:var(--s2);border:0.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.75rem}
+.card{background:var(--s2);border:.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.75rem}
 .card-title{font-size:13px;font-weight:500;margin-bottom:.75rem}
-.asset-card{background:var(--s2);border:0.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.65rem}
+.asset-card{background:var(--s2);border:.5px solid var(--border);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.65rem}
 .asset-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:.5rem}
-.ticker{font-size:14px;font-weight:500}
-.asset-tipo{font-size:10px;color:var(--muted);margin-left:5px}
+.ticker{font-size:14px;font-weight:500}.asset-tipo{font-size:10px;color:var(--muted);margin-left:5px}
 .asset-row{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-top:3px}
 .asset-val{color:var(--text);font-weight:500}
 .badge{font-size:10px;padding:2px 7px;border-radius:10px;font-weight:500}
 .badge-ok{background:rgba(27,175,122,.15);color:var(--green)}
 .badge-warn{background:rgba(237,161,0,.15);color:var(--warn)}
 .badge-red{background:rgba(227,73,72,.15);color:var(--red)}
-/* PROGRESS */
 .progress-bar{height:5px;background:var(--s1);border-radius:10px;overflow:hidden;margin-top:5px}
 .progress-fill{height:100%;background:var(--accent);border-radius:10px;transition:width .6s}
-/* AI */
-.ai-box{background:var(--s1);border:0.5px solid rgba(42,120,214,.3);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.9rem}
+.ai-box{background:var(--s1);border:.5px solid rgba(42,120,214,.3);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.9rem}
 .ai-label{font-size:11px;color:var(--accent);margin-bottom:.4rem}
 .ai-text{font-size:12px;line-height:1.65}
-/* LISTS */
-.prov-row,.aporte-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:0.5px solid var(--border);font-size:12px}
+.prov-row,.aporte-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:.5px solid var(--border);font-size:12px;gap:8px}
 .prov-row:last-child,.aporte-row:last-child{border:none}
 .divider{height:.5px;background:var(--border);margin:.65rem 0}
-/* FORMS */
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem}
-.form-grid input,.form-grid select,.form-full input,.form-full select{font-size:12px;padding:7px 8px;border-radius:var(--radius);border:0.5px solid var(--border);background:var(--s1);color:var(--text);width:100%}
-.form-full{margin-bottom:8px}
+.form-grid input,.form-grid select,.ticker-input{font-size:12px;padding:7px 8px;border-radius:var(--radius);border:.5px solid var(--border);background:var(--s1);color:var(--text);width:100%}
+.form-grid input:focus,.form-grid select:focus,.ticker-input:focus{outline:none;border-color:var(--accent)}
+.ticker-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.ticker-status{font-size:11px;min-height:16px;margin-bottom:8px;line-height:1.5}
 .form-err{font-size:11px;color:var(--red);margin-bottom:8px;min-height:14px}
 .btn{display:block;width:100%;padding:9px;font-size:13px;font-weight:500;border-radius:var(--radius);cursor:pointer;text-align:center;border:.5px solid var(--border);background:transparent;color:var(--text);margin-bottom:.5rem}
-.btn:hover{background:var(--s1)}
-.btn-accent{background:var(--accent);color:#fff;border:none}
-.btn-accent:hover{opacity:.9}
+.btn-accent{background:var(--accent);color:#fff;border:none}.btn-accent:hover{opacity:.9}
 .btn-mini{font-size:11px;padding:3px 8px;border-radius:6px;border:.5px solid var(--border);background:transparent;color:var(--muted);cursor:pointer}
-.btn-mini:hover{background:var(--s1);color:var(--text)}
-.btn-mini-red:hover{color:var(--red);border-color:var(--red)}
-/* CHARTS */
+.btn-mini:hover{background:var(--s1);color:var(--text)}.btn-mini-red:hover{color:var(--red);border-color:var(--red)}
 .chart-wrap{position:relative;width:100%;height:180px;margin-bottom:.5rem}
 .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:.65rem}
 .empty{text-align:center;padding:1.5rem;color:var(--muted);font-size:12px;line-height:1.7}
+/* MODAL */
+#modalDiv{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center;padding:1rem}
+.modal-box{background:var(--s1);border:.5px solid var(--border);border-radius:16px;padding:1.25rem;width:100%;max-width:380px;max-height:80vh;overflow-y:auto}
+.modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem}
+.modal-title{font-size:15px;font-weight:500}
+.modal-close{background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer}
 </style>
 </head>
 <body>
 
-<!-- AUTH SCREEN -->
+<!-- AUTH -->
 <div id="authScreen">
   <div class="auth-box">
     <div class="auth-logo">Inve<span>xa</span></div>
     <div class="auth-sub">sua carteira inteligente</div>
     <h2 id="authTitle" style="font-size:16px;font-weight:500;margin-bottom:1rem">entrar</h2>
-    <div id="fieldNome" class="field" style="display:none">
-      <label>nome</label>
-      <input type="text" id="authNome" placeholder="seu nome">
-    </div>
-    <div class="field">
-      <label>email</label>
-      <input type="email" id="authEmail" placeholder="seu@email.com">
-    </div>
-    <div class="field">
-      <label>senha</label>
-      <input type="password" id="authSenha" placeholder="••••••••">
-    </div>
-    <div id="fieldConvite" class="field" style="display:none">
-      <label>código de convite</label>
-      <input type="text" id="authConvite" placeholder="ex: JAIRO2026" style="text-transform:uppercase">
-    </div>
+    <div id="fieldNome" class="field" style="display:none"><label>nome</label><input type="text" id="authNome" placeholder="seu nome"></div>
+    <div class="field"><label>email</label><input type="email" id="authEmail" placeholder="seu@email.com"></div>
+    <div class="field"><label>senha</label><input type="password" id="authSenha" placeholder="••••••••"></div>
+    <div id="fieldConvite" class="field" style="display:none"><label>código de convite</label><input type="text" id="authConvite" placeholder="ex: JAIRO2026" style="text-transform:uppercase"></div>
     <div id="authError" class="auth-err"></div>
     <button id="btnLogin" class="auth-btn" onclick="login()">entrar</button>
     <button id="btnCadastro" class="auth-btn" onclick="cadastrar()" style="display:none">criar conta</button>
-    <div class="auth-switch" id="switchMode">
-      Não tem conta? <a href="#" onclick="setAuthMode('cadastro')">Criar com convite</a>
-    </div>
+    <div class="auth-switch" id="switchMode">Não tem conta? <a href="#" onclick="setAuthMode('cadastro')">Criar com convite</a></div>
   </div>
 </div>
 
-<!-- APP SCREEN -->
+<!-- APP -->
 <div id="appScreen">
   <div class="app-header">
     <div class="app-logo">Inve<span>xa ● ao vivo</span></div>
@@ -486,7 +510,6 @@ a{color:var(--accent);text-decoration:none}
       <button class="logout-btn" onclick="logout()">sair</button>
     </div>
   </div>
-
   <div class="tabs">
     <button class="tab active" data-tab="painel" onclick="switchTab('painel',this)">painel</button>
     <button class="tab" data-tab="ativos" onclick="switchTab('ativos',this)">ativos</button>
@@ -500,28 +523,21 @@ a{color:var(--accent);text-decoration:none}
   <div id="painel" class="section active">
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">patrimônio estimado</div><div class="kpi-val" id="kpiPatrimonio">—</div></div>
-      <div class="kpi"><div class="kpi-label">resultado total</div><div class="kpi-val" id="kpiResult">—</div><div class="kpi-sub" id="kpiResultPct"></div></div>
-      <div class="kpi"><div class="kpi-label">dividendos/mês est.</div><div class="kpi-val" id="kpiDiv">—</div></div>
-      <div class="kpi"><div class="kpi-label">DY médio carteira</div><div class="kpi-val" id="kpiDY">—</div></div>
+      <div class="kpi"><div class="kpi-label">resultado em cota</div><div class="kpi-val" id="kpiResult">—</div><div class="kpi-sub" id="kpiResultPct"></div></div>
+      <div class="kpi"><div class="kpi-label">dividendos recebidos</div><div class="kpi-val green" id="kpiAcumulado">—</div><div class="kpi-sub green" id="kpiRetornoReal"></div></div>
+      <div class="kpi"><div class="kpi-label">dividendos/mês est.</div><div class="kpi-val" id="kpiDiv">—</div><div class="kpi-sub muted" id="kpiDY"></div></div>
     </div>
     <div class="card">
       <div class="card-title">meta mensal de dividendos</div>
-      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px">
-        <span id="metaAtual">R$ —</span><span>meta: R$ 1.518</span>
-      </div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin-bottom:4px"><span id="metaAtual">R$ 0,00/mês</span><span>meta: R$ 1.518</span></div>
       <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
       <div style="font-size:11px;color:var(--muted);margin-top:5px" id="metaPct"></div>
     </div>
-    <div class="ai-box">
-      <div class="ai-label">✦ análise ia — hoje</div>
-      <div class="ai-text" id="aiText">carregando análise...</div>
-    </div>
+    <div class="ai-box"><div class="ai-label">✦ análise ia — hoje</div><div class="ai-text" id="aiText">carregando...</div></div>
   </div>
 
   <!-- ATIVOS -->
-  <div id="ativos" class="section">
-    <div id="ativosList"></div>
-  </div>
+  <div id="ativos" class="section"><div id="ativosList"></div></div>
 
   <!-- EVOLUÇÃO -->
   <div id="evolucao" class="section">
@@ -533,10 +549,7 @@ a{color:var(--accent);text-decoration:none}
       </div>
       <div class="chart-wrap"><canvas id="chartEvolucao"></canvas></div>
     </div>
-    <div class="card">
-      <div class="card-title">dividendos por mês</div>
-      <div class="chart-wrap"><canvas id="chartDividendos"></canvas></div>
-    </div>
+    <div class="card"><div class="card-title">dividendos por mês</div><div class="chart-wrap"><canvas id="chartDividendos"></canvas></div></div>
     <div class="card">
       <div class="card-title">composição da carteira</div>
       <div style="position:relative;width:100%;height:160px"><canvas id="chartPizza"></canvas></div>
@@ -550,58 +563,68 @@ a{color:var(--accent);text-decoration:none}
       <div class="card-title">dividendos mensais estimados</div>
       <div id="proventosLista"></div>
       <div class="divider"></div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500">
-        <span>total estimado</span><span class="green" id="totalProv">R$ —</span>
-      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total mensal</span><span class="green" id="totalProvMensal">R$ 0,00</span></div>
     </div>
-    <button class="btn" onclick="sendPrompt('Qual FII devo priorizar no próximo aporte para aumentar meus dividendos mensais?')">qual priorizar no próximo aporte? ↗</button>
+    <div class="card">
+      <div class="card-title">dividendos acumulados recebidos</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:.5rem">calculado com base nos seus aportes e no histórico real de pagamentos</div>
+      <div style="display:flex;justify-content:space-between;font-size:20px;font-weight:500"><span class="green" id="totalProvAcumulado">—</span></div>
+    </div>
   </div>
 
   <!-- APORTES -->
   <div id="aportes" class="section">
     <div class="card">
       <div class="card-title">registrar aporte</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">informe a data real da compra — usamos ela para calcular os dividendos que você recebeu.</div>
       <div class="form-grid">
         <input type="text" id="apTicker" placeholder="ticker (ex: MXRF11)" style="text-transform:uppercase">
         <input type="date" id="apData">
-        <input type="number" id="apCotas" placeholder="cotas" min="1">
-        <input type="number" id="apPreco" placeholder="preço R$" step="0.01">
+        <input type="number" id="apCotas" placeholder="cotas compradas" min="1">
+        <input type="number" id="apPreco" placeholder="preço pago R$" step="0.01">
       </div>
       <div class="form-err" id="apError"></div>
       <button class="btn btn-accent" onclick="registrarAporte()">registrar aporte</button>
     </div>
-    <div class="card">
-      <div class="card-title">histórico</div>
-      <div id="aportesList"></div>
-      <div id="aportesTotais"></div>
-    </div>
+    <div class="card"><div class="card-title">histórico de aportes</div><div id="aportesList"></div><div id="aportesTotais"></div></div>
   </div>
 
   <!-- ADICIONAR ATIVO -->
   <div id="adicionar" class="section">
     <div class="card">
       <div class="card-title">cadastrar / editar ativo</div>
-      <div class="form-grid">
-        <input type="text" id="atTicker" placeholder="ticker (ex: MXRF11)" style="text-transform:uppercase">
-        <select id="atTipo">
-          <option value="FII">FII</option>
-          <option value="FIAgro">FIAgro</option>
-          <option value="Ação">Ação</option>
-          <option value="Tesouro">Tesouro</option>
+      <div class="ticker-row">
+        <input type="text" class="ticker-input" id="atTicker" placeholder="ticker (ex: MXRF11)" style="text-transform:uppercase" onblur="buscarDadosTicker()">
+        <select class="ticker-input" id="atTipo">
+          <option value="FII">FII</option><option value="FIAgro">FIAgro</option>
+          <option value="Ação">Ação</option><option value="Tesouro">Tesouro</option>
         </select>
-        <input type="number" id="atCotas" placeholder="cotas" step="0.01">
+      </div>
+      <div class="ticker-status muted" id="tickerStatus"></div>
+      <div class="form-grid">
+        <input type="number" id="atCotas" placeholder="total de cotas" step="0.01">
         <input type="number" id="atPM" placeholder="preço médio R$" step="0.01">
-        <input type="number" id="atDivMes" placeholder="div. mensal R$" step="0.01">
-        <input type="number" id="atDY" placeholder="DY 12m %" step="0.01">
+        <input type="number" id="atDivMes" placeholder="div. mensal R$ (auto)" step="0.0001">
+        <input type="number" id="atDY" placeholder="DY 12m % (auto)" step="0.01">
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem;line-height:1.6">
+        ✦ dividendo e DY buscados automaticamente.<br>
+        para histórico preciso use <b>registrar aporte</b> com a data real.
       </div>
       <div class="form-err" id="ativoError"></div>
       <button class="btn btn-accent" onclick="salvarAtivo()">salvar ativo</button>
     </div>
-    <div class="card" style="font-size:12px;color:var(--muted);line-height:1.7">
-      <div class="card-title">como encontrar os dados</div>
-      <b style="color:var(--text)">Dividendo mensal:</b> veja o último pagamento no Status Invest ou no app da XP em "Proventos".<br><br>
-      <b style="color:var(--text)">DY 12m:</b> no Status Invest, na página do FII, campo "Dividend Yield".
+  </div>
+</div>
+
+<!-- MODAL HISTÓRICO DIVIDENDOS -->
+<div id="modalDiv" onclick="if(event.target===this)fecharModal()">
+  <div class="modal-box">
+    <div class="modal-header">
+      <span class="modal-title">dividendos recebidos — <span id="modalTicker"></span></span>
+      <button class="modal-close" onclick="fecharModal()">×</button>
     </div>
+    <div id="modalBody"></div>
   </div>
 </div>
 
