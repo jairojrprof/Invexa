@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Invexa</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script type="module">
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
 
@@ -12,46 +13,32 @@ const SUPABASE_URL = 'https://xxidrfxkykpwacvpdllv.supabase.co'
 const SUPABASE_KEY = 'sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
 const sb = createClient(SUPABASE_URL, SUPABASE_KEY)
 
-// Todas as chamadas de API passam pelo servidor seguro
 const API = {
-  quote: (tickers) => fetch(`/api/quote?tickers=${tickers}`).then(r=>r.json()),
-  dividends: (ticker) => fetch(`/api/dividends?ticker=${ticker}`).then(r=>r.json()),
-  ai: (carteira) => fetch('/api/ai', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({carteira})
-  }).then(r=>r.json())
+  quote: (t) => fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
+  dividends: (t) => fetch(`/api/dividends?ticker=${t}`).then(r=>r.json()),
+  ai: (c) => fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({carteira:c})}).then(r=>r.json())
 }
 
-let user=null, carteira=[], aportes=[], precos={}, dividendosHist={}, charts={}, editingId=null
+let user=null, carteira=[], aportes=[], precos={}, dividendosHist={}, charts={}, importPreview=[]
 
 // ── INIT ───────────────────────────────────────────────
 async function init() {
   const { data:{session} } = await sb.auth.getSession()
   if (session) { user=session.user; await showApp() }
   else showAuth('login')
-  sb.auth.onAuthStateChange(async(_e,session)=>{
-    if(session){user=session.user;await showApp()}
-    else showAuth('login')
-  })
+  sb.auth.onAuthStateChange(async(_e,s)=>{ if(s){user=s.user;await showApp()} else showAuth('login') })
 }
 
 // ── AUTH ───────────────────────────────────────────────
-function showAuth(mode) {
-  el('authScreen').style.display='flex'
-  el('appScreen').style.display='none'
-  setAuthMode(mode)
-}
+function showAuth(mode) { el('authScreen').style.display='flex'; el('appScreen').style.display='none'; setAuthMode(mode) }
 window.setAuthMode = function(mode) {
-  const isLogin=mode==='login'
-  el('authTitle').textContent=isLogin?'entrar':'criar conta'
-  el('btnLogin').style.display=isLogin?'block':'none'
-  el('btnCadastro').style.display=isLogin?'none':'block'
-  el('fieldConvite').style.display=isLogin?'none':'block'
-  el('fieldNome').style.display=isLogin?'none':'block'
-  el('switchMode').innerHTML=isLogin
-    ?'Não tem conta? <a href="#" onclick="setAuthMode(\'cadastro\')">Criar com convite</a>'
-    :'Já tem conta? <a href="#" onclick="setAuthMode(\'login\')">Entrar</a>'
+  const L=mode==='login'
+  el('authTitle').textContent=L?'entrar':'criar conta'
+  el('btnLogin').style.display=L?'block':'none'
+  el('btnCadastro').style.display=L?'none':'block'
+  el('fieldConvite').style.display=L?'none':'block'
+  el('fieldNome').style.display=L?'none':'block'
+  el('switchMode').innerHTML=L?'Não tem conta? <a href="#" onclick="setAuthMode(\'cadastro\')">Criar com convite</a>':'Já tem conta? <a href="#" onclick="setAuthMode(\'login\')">Entrar</a>'
   el('authError').textContent=''
 }
 window.login = async function() {
@@ -65,7 +52,6 @@ window.cadastrar = async function() {
   btn.textContent='verificando...'; btn.disabled=true
   const {data:conv,error:ce}=await sb.from('convites').select('*').eq('codigo',convite).eq('ativo',true).single()
   if(ce||!conv||conv.usado_por){errEl.textContent='Convite inválido ou já utilizado.';btn.textContent='criar conta';btn.disabled=false;return}
-  btn.textContent='criando conta...'
   const {data:sd,error:se}=await sb.auth.signUp({email:val('authEmail'),password:val('authSenha')})
   if(se){errEl.textContent=se.message;btn.textContent='criar conta';btn.disabled=false;return}
   await sb.from('profiles').update({nome:val('authNome'),convite_usado:convite}).eq('id',sd.user.id)
@@ -77,8 +63,7 @@ window.logout = async function() { await sb.auth.signOut() }
 
 // ── APP ────────────────────────────────────────────────
 async function showApp() {
-  el('authScreen').style.display='none'
-  el('appScreen').style.display='block'
+  el('authScreen').style.display='none'; el('appScreen').style.display='block'
   await Promise.all([loadCarteira(),loadAportes()])
   await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
   renderAll(); loadAI()
@@ -99,29 +84,30 @@ async function loadQuotes() {
   } catch(e){}
 }
 
-// ── DIVIDENDOS ACUMULADOS ──────────────────────────────
+// ── DIVIDENDOS ACUMULADOS POR DATA DE APORTE ──────────
 async function calcularDividendosAcumulados() {
   if(!carteira.length||!aportes.length) return
   const tickers=[...new Set(carteira.map(a=>a.ticker))]
   await Promise.all(tickers.map(async ticker=>{
     try {
       const data=await API.dividends(ticker)
-      const divs=data.results?.[0]?.dividendsData?.cashDividends||[]
+      const divs=data.dividends||[]
       const aportesDoTicker=aportes.filter(a=>a.ticker===ticker).sort((a,b)=>new Date(a.data)-new Date(b.data))
-      if(!aportesDoTicker.length||!divs.length){dividendosHist[ticker]={total:0,historico:[]};return}
-      let totalAcumulado=0; const historico=[]
+      if(!aportesDoTicker.length||!divs.length){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0};return}
+      let total=0; const historico=[]
       divs.forEach(div=>{
-        const dataCom=new Date(div.paymentDate||div.lastDatePrior)
+        const dataCom=new Date(div.paymentDate||div.lastDatePrior||div.exDividendDate)
         if(isNaN(dataCom)) return
         const cotasNaData=aportesDoTicker.filter(a=>new Date(a.data)<=dataCom).reduce((s,a)=>s+a.cotas,0)
-        if(cotasNaData>0&&div.rate>0){
-          const recebido=cotasNaData*div.rate
-          totalAcumulado+=recebido
-          historico.push({data:dataCom.toLocaleDateString('pt-BR'),cotas:cotasNaData,valorPorCota:div.rate,recebido})
-        }
+        if(cotasNaData>0&&div.rate>0){const rec=cotasNaData*div.rate;total+=rec;historico.push({data:dataCom.toLocaleDateString('pt-BR'),cotas:cotasNaData,valorPorCota:div.rate,recebido:rec})}
       })
-      dividendosHist[ticker]={total:totalAcumulado,historico:historico.reverse()}
-    } catch(e){dividendosHist[ticker]={total:0,historico:[]}}
+      // DY e div mensal calculados da Brapi
+      const p=precos[ticker]?.preco||aportesDoTicker[0]?.preco||1
+      const soma12=divs.slice(0,12).reduce((s,d)=>s+(d.rate||0),0)
+      const divMes=divs[0]?.rate||0
+      const dy12m=p>0?(soma12/p*100):0
+      dividendosHist[ticker]={total,historico:historico.reverse(),divMes,dy12m}
+    } catch(e){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0}}
   }))
 }
 
@@ -131,61 +117,35 @@ window.refreshQuotes = async function() {
   renderAll(); el('refreshBtn').textContent='⟳ atualizar'
 }
 
-// ── BUSCA AUTOMÁTICA TICKER ────────────────────────────
-window.buscarDadosTicker = async function() {
-  const ticker=val('atTicker').trim().toUpperCase()
-  if(!ticker||ticker.length<5) return
-  const statusEl=el('tickerStatus')
-  statusEl.textContent='buscando dados...'; statusEl.style.color='var(--muted)'
-  try {
-    const [dQ,dD]=await Promise.all([API.quote(ticker),API.dividends(ticker)])
-    const q=dQ.results?.[0]
-    if(!q){statusEl.textContent='ticker não encontrado.';statusEl.style.color='var(--red)';return}
-    if(ticker.endsWith('11')) el('atTipo').value='FII'
-    else if(ticker.length<=5) el('atTipo').value='Ação'
-    const divs=dD.results?.[0]?.dividendsData?.cashDividends||[]
-    if(divs.length){
-      const ultimo=divs[0]
-      el('atDivMes').value=ultimo.rate?.toFixed(4)||'0'
-      const soma12=divs.slice(0,12).reduce((s,d)=>s+(d.rate||0),0)
-      el('atDY').value=q.regularMarketPrice?(soma12/q.regularMarketPrice*100).toFixed(2):'0'
-      statusEl.textContent=`✓ ${q.longName||ticker} — div: R$${ultimo.rate?.toFixed(4)}, DY 12m: ${el('atDY').value}%`
-      statusEl.style.color='var(--green)'
-    } else {
-      statusEl.textContent=`✓ ${ticker} encontrado — preencha dividendo manualmente.`
-      statusEl.style.color='var(--warn)'
-    }
-  } catch(e){statusEl.textContent='erro ao buscar. preencha manualmente.';statusEl.style.color='var(--red)'}
-}
-
 // ── HELPERS ────────────────────────────────────────────
 const fmt=v=>v.toLocaleString('pt-BR',{style:'currency',currency:'BRL',minimumFractionDigits:2})
 const fmtP=v=>(v>=0?'+':'')+v.toFixed(2)+'%'
 const el=id=>document.getElementById(id)
 const val=id=>el(id)?.value||''
 function set(id,html){const e=el(id);if(e)e.innerHTML=html}
+function tipoByTicker(t){return t.endsWith('11')?'FII':t.length<=5?'Ação':'FII'}
 
 // ── RENDER ─────────────────────────────────────────────
 function renderAll(){renderKPIs();renderAtivos();renderProventos();renderAportesList();renderCharts()}
 
 function renderKPIs(){
-  let patrimonio=0,custo=0,divMes=0,divAcumulado=0
+  let patrimonio=0,custo=0,divMes=0,divAcum=0
   carteira.forEach(a=>{
     const p=precos[a.ticker]?.preco||a.preco_medio
     patrimonio+=p*a.cotas; custo+=a.preco_medio*a.cotas
-    if(a.div_mes) divMes+=a.div_mes*a.cotas
-    divAcumulado+=dividendosHist[a.ticker]?.total||0
+    divMes+=(dividendosHist[a.ticker]?.divMes||0)*a.cotas
+    divAcum+=dividendosHist[a.ticker]?.total||0
   })
   const result=patrimonio-custo
-  const dyMedio=carteira.length?carteira.reduce((s,a)=>s+(a.dy12m||0),0)/carteira.length:0
+  const dyMedio=carteira.length?carteira.reduce((s,a)=>s+(dividendosHist[a.ticker]?.dy12m||0),0)/carteira.length:0
   set('kpiPatrimonio',fmt(patrimonio))
   const rEl=el('kpiResult');if(rEl){rEl.textContent=fmt(result);rEl.className='kpi-val '+(result>=0?'green':'red')}
   const rpEl=el('kpiResultPct');if(rpEl){rpEl.textContent=fmtP((result/(custo||1))*100);rpEl.className='kpi-sub '+(result>=0?'green':'red')}
   set('kpiDiv',fmt(divMes)); set('kpiDY',dyMedio.toFixed(1)+'%')
-  set('kpiAcumulado',fmt(divAcumulado))
-  const retornoReal=custo>0?((result+divAcumulado)/custo*100):0
-  set('kpiRetornoReal',fmtP(retornoReal))
-  el('kpiRetornoReal').className='kpi-sub '+(retornoReal>=0?'green':'red')
+  set('kpiAcumulado',fmt(divAcum))
+  const retReal=custo>0?((result+divAcum)/custo*100):0
+  set('kpiRetornoReal',fmtP(retReal))
+  el('kpiRetornoReal').className='kpi-sub '+(retReal>=0?'green':'red')
   const pct=Math.min((divMes/1518)*100,100)
   set('metaAtual',fmt(divMes)+'/mês')
   const pf=el('progressFill');if(pf)pf.style.width=pct+'%'
@@ -194,30 +154,24 @@ function renderKPIs(){
 
 function renderAtivos(){
   const c=el('ativosList');if(!c)return;c.innerHTML=''
-  if(!carteira.length){c.innerHTML='<div class="empty">nenhum ativo ainda.<br>clique em <b>+ ativo</b> para começar.</div>';return}
-  ;[...carteira].sort((a,b)=>{
-    const pa=precos[a.ticker]?.preco||a.preco_medio,pb=precos[b.ticker]?.preco||b.preco_medio
-    return pb*b.cotas-pa*a.cotas
-  }).forEach(a=>{
+  if(!carteira.length){c.innerHTML='<div class="empty">nenhum ativo ainda.<br>registre seu primeiro aporte na aba <b>aportes</b>.</div>';return}
+  ;[...carteira].sort((a,b)=>{const pa=precos[a.ticker]?.preco||a.preco_medio,pb=precos[b.ticker]?.preco||b.preco_medio;return pb*b.cotas-pa*a.cotas}).forEach(a=>{
     const p=precos[a.ticker]?.preco||a.preco_medio,vp=precos[a.ticker]?.var||0
     const r=((p-a.preco_medio)/a.preco_medio)*100,val2=p*a.cotas
-    const acumulado=dividendosHist[a.ticker]?.total||0
-    const retornoReal=((val2-a.preco_medio*a.cotas+acumulado)/(a.preco_medio*a.cotas))*100
+    const acum=dividendosHist[a.ticker]?.total||0
+    const divMes=dividendosHist[a.ticker]?.divMes||0
+    const retReal=((val2-a.preco_medio*a.cotas+acum)/(a.preco_medio*a.cotas))*100
     const [st,bg]=r>0?['ok','acima do PM']:r>-15?['warn','leve queda']:['red','atenção']
     c.innerHTML+=`<div class="asset-card">
-      <div class="asset-head">
-        <div><span class="ticker">${a.ticker}</span><span class="asset-tipo">${a.tipo}·${a.cotas}c</span></div>
-        <span class="badge badge-${st}">${bg}</span>
-      </div>
+      <div class="asset-head"><div><span class="ticker">${a.ticker}</span><span class="asset-tipo">${a.tipo}·${a.cotas}c</span></div><span class="badge badge-${st}">${bg}</span></div>
       <div class="asset-row"><span>preço atual</span><span class="asset-val">${fmt(p)} <span class="${vp>=0?'green':'red'} small">${fmtP(vp)}</span></span></div>
       <div class="asset-row"><span>PM · total investido</span><span class="asset-val">${fmt(a.preco_medio)} · ${fmt(a.preco_medio*a.cotas)}</span></div>
       <div class="asset-row"><span>resultado em cota</span><span class="${r>=0?'green':'red'} asset-val">${fmtP(r)}</span></div>
-      ${acumulado>0?`<div class="asset-row"><span>dividendos recebidos</span><span class="green asset-val">${fmt(acumulado)}</span></div>`:''}
-      ${acumulado>0?`<div class="asset-row"><span>retorno real total</span><span class="${retornoReal>=0?'green':'red'} asset-val">${fmtP(retornoReal)}</span></div>`:''}
-      ${a.div_mes?`<div class="asset-row"><span>div. mensal estimado</span><span class="green asset-val">${fmt(a.div_mes*a.cotas)}</span></div>`:''}
+      ${acum>0?`<div class="asset-row"><span>dividendos recebidos</span><span class="green asset-val">${fmt(acum)}</span></div>`:''}
+      ${acum>0?`<div class="asset-row"><span>retorno real total</span><span class="${retReal>=0?'green':'red'} asset-val">${fmtP(retReal)}</span></div>`:''}
+      ${divMes>0?`<div class="asset-row"><span>div. mensal estimado</span><span class="green asset-val">${fmt(divMes*a.cotas)}</span></div>`:''}
       <div style="display:flex;gap:8px;margin-top:8px">
         <button class="btn-mini" onclick="verHistoricoDividendos('${a.ticker}')">histórico div.</button>
-        <button class="btn-mini" onclick="editarAtivo('${a.id}','${a.ticker}',${a.cotas},${a.preco_medio},'${a.tipo}',${a.div_mes||0},${a.dy12m||0})">editar</button>
         <button class="btn-mini btn-mini-red" onclick="removerAtivo('${a.id}')">remover</button>
       </div>
     </div>`
@@ -226,30 +180,29 @@ function renderAtivos(){
 
 window.verHistoricoDividendos = function(ticker){
   const hist=dividendosHist[ticker]
-  if(!hist||!hist.historico.length){alert(`Nenhum dividendo calculado para ${ticker}. Registre aportes com a data real.`);return}
+  if(!hist||!hist.historico.length){alert(`Nenhum dividendo calculado para ${ticker}. Verifique se os aportes têm datas anteriores aos pagamentos.`);return}
   set('modalTicker',ticker)
   const rows=hist.historico.map(h=>`<div class="prov-row"><span>${h.data}</span><span class="muted">${h.cotas}c × ${fmt(h.valorPorCota)}</span><span class="green fw">${fmt(h.recebido)}</span></div>`).join('')
   set('modalBody',`${rows}<div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total recebido</span><span class="green">${fmt(hist.total)}</span></div>`)
   el('modalDiv').style.display='flex'
 }
-window.fecharModal = function(){el('modalDiv').style.display='none'}
+window.fecharModal=function(){el('modalDiv').style.display='none'}
 
 function renderProventos(){
   const l=el('proventosLista');if(!l)return;l.innerHTML=''
-  let totalMensal=0,totalAcumulado=0
-  carteira.filter(a=>a.div_mes>0).sort((a,b)=>b.div_mes*b.cotas-a.div_mes*a.cotas).forEach(a=>{
-    const vm=a.div_mes*a.cotas;totalMensal+=vm
-    const acum=dividendosHist[a.ticker]?.total||0;totalAcumulado+=acum
-    l.innerHTML+=`<div class="prov-row"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}×${fmt(a.div_mes)}</span><span class="green fw">${fmt(vm)}/mês</span>${acum>0?`<span class="green" style="font-size:10px">${fmt(acum)} acum.</span>`:''}</div>`
+  let totalMes=0,totalAcum=0
+  carteira.sort((a,b)=>{const da=dividendosHist[a.ticker]?.divMes||0,db=dividendosHist[b.ticker]?.divMes||0;return db*b.cotas-da*a.cotas}).forEach(a=>{
+    const dm=dividendosHist[a.ticker]?.divMes||0,acum=dividendosHist[a.ticker]?.total||0
+    const vm=dm*a.cotas;totalMes+=vm;totalAcum+=acum
+    l.innerHTML+=`<div class="prov-row"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}×${fmt(dm)}</span><span class="green fw">${fmt(vm)}/mês</span>${acum>0?`<span class="green" style="font-size:10px">${fmt(acum)} acum.</span>`:''}</div>`
   })
-  set('totalProvMensal',fmt(totalMensal))
-  set('totalProvAcumulado',fmt(totalAcumulado))
+  set('totalProvMensal',fmt(totalMes)); set('totalProvAcumulado',fmt(totalAcum))
 }
 
 function renderAportesList(){
   const c=el('aportesList');if(!c)return;c.innerHTML=''
   const desc=[...aportes].sort((a,b)=>new Date(b.data)-new Date(a.data))
-  if(!desc.length){c.innerHTML='<div class="empty">nenhum aporte registrado ainda.</div>';set('aportesTotais','');return}
+  if(!desc.length){c.innerHTML='<div class="empty">nenhum aporte registrado ainda.<br>use o formulário acima para começar.</div>';set('aportesTotais','');return}
   desc.slice(0,30).forEach(a=>{
     const dt=new Date(a.data+'T12:00').toLocaleDateString('pt-BR')
     c.innerHTML+=`<div class="aporte-row"><div><span class="fw">${a.ticker}</span> <span class="muted small">${a.cotas}c × ${fmt(a.preco)}</span></div><div style="display:flex;align-items:center;gap:8px"><span class="fw">${fmt(a.total)}</span><span class="muted small">${dt}</span><button class="btn-mini btn-mini-red" onclick="removerAporte('${a.id}')">×</button></div></div>`
@@ -262,14 +215,13 @@ function renderCharts(){
   const meses=['Abr','Mai','Jun','Jul','Ago','Set']
   const custo=carteira.reduce((s,a)=>s+a.preco_medio*a.cotas,0)||1000
   const patrimonios=[custo*.94,custo*.95,custo*.96,custo*.97,custo*.96,custo*.97]
-  const custoArr=meses.map(()=>custo)
-  const totalDivMes=carteira.reduce((s,a)=>s+(a.div_mes||0)*a.cotas,0)
+  const totalDivMes=carteira.reduce((s,a)=>s+(dividendosHist[a.ticker]?.divMes||0)*a.cotas,0)
   const divsMes=meses.map((_,i)=>+(totalDivMes*(0.85+i*0.03)).toFixed(2))
   const gc='#898781',grid='rgba(128,128,128,0.1)'
   const baseOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:gc,font:{size:10}}},y:{grid:{color:grid},ticks:{color:gc,font:{size:10}}}}}
   ;['chartEvolucao','chartDividendos','chartPizza'].forEach(id=>{if(charts[id]){charts[id].destroy();charts[id]=null}})
   const ev=el('chartEvolucao')
-  if(ev) charts.chartEvolucao=new Chart(ev,{type:'line',data:{labels:meses,datasets:[{label:'patrimônio',data:patrimonios,borderColor:'#2a78d6',borderWidth:2,pointRadius:3,pointBackgroundColor:'#2a78d6',tension:.3,fill:false},{label:'custo',data:custoArr,borderColor:'#1baf7a',borderWidth:1.5,borderDash:[4,3],pointRadius:0,fill:false}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+Math.round(v/1000)+'k'}}}}})
+  if(ev) charts.chartEvolucao=new Chart(ev,{type:'line',data:{labels:meses,datasets:[{data:patrimonios,borderColor:'#2a78d6',borderWidth:2,pointRadius:3,tension:.3,fill:false},{data:meses.map(()=>custo),borderColor:'#1baf7a',borderWidth:1.5,borderDash:[4,3],pointRadius:0,fill:false}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+Math.round(v/1000)+'k'}}}}})
   const dv=el('chartDividendos')
   if(dv) charts.chartDividendos=new Chart(dv,{type:'bar',data:{labels:meses,datasets:[{data:divsMes,backgroundColor:'#2a78d6',borderRadius:4}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+v.toFixed(0)}}}}})
   const pz=el('chartPizza')
@@ -282,80 +234,190 @@ function renderCharts(){
   }
 }
 
-// ── ATIVO CRUD ──────────────────────────────────────────
-window.editarAtivo=function(id,ticker,cotas,pm,tipo,divMes,dy12m){
-  editingId=id
-  el('atTicker').value=ticker;el('atCotas').value=cotas;el('atPM').value=pm
-  el('atTipo').value=tipo;el('atDivMes').value=divMes;el('atDY').value=dy12m
-  el('tickerStatus').textContent='';switchTab('adicionar',null)
-}
-window.salvarAtivo=async function(){
-  const ticker=val('atTicker').trim().toUpperCase(),cotas=parseFloat(val('atCotas')),pm=parseFloat(val('atPM'))
-  const tipo=val('atTipo'),divMes=parseFloat(val('atDivMes'))||0,dy12m=parseFloat(val('atDY'))||0
-  const errEl=el('ativoError')
-  if(!ticker||!cotas||!pm){errEl.textContent='preencha ticker, cotas e preço médio.';return}
-  errEl.textContent=''
-  const payload={user_id:user.id,ticker,cotas,preco_medio:pm,tipo,div_mes:divMes,dy12m,ativo:true}
-  let error
-  if(editingId){({error}=await sb.from('carteira').update(payload).eq('id',editingId))}
-  else{({error}=await sb.from('carteira').upsert({...payload},{onConflict:'user_id,ticker'}))}
-  if(error){errEl.textContent=error.message;return}
-  editingId=null
-  ;['atTicker','atCotas','atPM','atDivMes','atDY'].forEach(id=>{el(id).value=''})
-  el('tickerStatus').textContent=''
-  errEl.style.color='var(--green)';errEl.textContent='ativo salvo!'
-  setTimeout(()=>{errEl.textContent='';errEl.style.color='var(--red)'},2000)
-  await loadCarteira();await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()
-}
-window.removerAtivo=async function(id){
-  if(!confirm('Remover este ativo?'))return
-  await sb.from('carteira').update({ativo:false}).eq('id',id)
-  await loadCarteira();renderAll()
-}
-
-// ── APORTE CRUD ─────────────────────────────────────────
-window.registrarAporte=async function(){
-  const ticker=val('apTicker').trim().toUpperCase(),data=val('apData')
-  const cotas=parseFloat(val('apCotas')),preco=parseFloat(val('apPreco'))
+// ── APORTE — cria/atualiza ativo automaticamente ──────
+window.registrarAporte = async function() {
+  const ticker=val('apTicker').trim().toUpperCase()
+  const data=val('apData'), cotas=parseFloat(val('apCotas')), preco=parseFloat(val('apPreco'))
   const errEl=el('apError')
   if(!ticker||!data||!cotas||!preco){errEl.textContent='preencha todos os campos.';return}
+  if(new Date(data)>new Date()){errEl.textContent='a data não pode ser no futuro.';return}
   errEl.textContent=''
-  const {error}=await sb.from('aportes').insert({user_id:user.id,ticker,cotas,preco,data})
-  if(error){errEl.textContent=error.message;return}
+  const btn=el('btnAporte'); btn.textContent='registrando...'; btn.disabled=true
+
+  // Salva o aporte
+  const {error:apErr}=await sb.from('aportes').insert({user_id:user.id,ticker,cotas,preco,data})
+  if(apErr){errEl.textContent=apErr.message;btn.textContent='registrar aporte';btn.disabled=false;return}
+
+  // Cria ou atualiza o ativo na carteira (PM ponderado)
   const exist=carteira.find(a=>a.ticker===ticker)
   if(exist){
-    const nc=exist.cotas+cotas,npm=((exist.preco_medio*exist.cotas)+(preco*cotas))/nc
+    const nc=exist.cotas+cotas
+    const npm=((exist.preco_medio*exist.cotas)+(preco*cotas))/nc
     await sb.from('carteira').update({cotas:nc,preco_medio:+npm.toFixed(4),atualizado_em:new Date().toISOString()}).eq('id',exist.id)
+  } else {
+    const tipo=tipoByTicker(ticker)
+    await sb.from('carteira').insert({user_id:user.id,ticker,cotas,preco_medio:preco,tipo,ativo:true})
   }
+
   ;['apTicker','apData','apCotas','apPreco'].forEach(id=>{el(id).value=''})
-  errEl.style.color='var(--green)';errEl.textContent='aporte registrado! recalculando dividendos...'
-  await loadCarteira();await loadAportes();await calcularDividendosAcumulados();renderAll()
+  errEl.style.color='var(--green)'; errEl.textContent='✓ aporte registrado! recalculando dividendos...'
+  btn.textContent='registrar aporte'; btn.disabled=false
+
+  await loadCarteira(); await loadAportes()
+  await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
+  renderAll()
   setTimeout(()=>{errEl.textContent='';errEl.style.color='var(--red)'},3000)
 }
-window.removerAporte=async function(id){
-  if(!confirm('Remover este aporte?'))return
+
+window.removerAporte = async function(id) {
+  if(!confirm('Remover este aporte? O preço médio será recalculado.'))return
   await sb.from('aportes').delete().eq('id',id)
-  await loadAportes();await calcularDividendosAcumulados();renderAll()
+  // Recalcula PM para o ticker
+  await loadAportes()
+  const tickers=[...new Set(aportes.map(a=>a.ticker))]
+  await Promise.all(tickers.map(async ticker=>{
+    const ap=aportes.filter(a=>a.ticker===ticker)
+    if(!ap.length){await sb.from('carteira').update({ativo:false}).eq('user_id',user.id).eq('ticker',ticker);return}
+    const totalCotas=ap.reduce((s,a)=>s+a.cotas,0)
+    const pm=ap.reduce((s,a)=>s+a.preco*a.cotas,0)/totalCotas
+    await sb.from('carteira').update({cotas:totalCotas,preco_medio:+pm.toFixed(4)}).eq('user_id',user.id).eq('ticker',ticker)
+  }))
+  await loadCarteira(); await calcularDividendosAcumulados(); renderAll()
+}
+
+window.removerAtivo = async function(id) {
+  if(!confirm('Remover este ativo e todos os seus aportes?'))return
+  const ativo=carteira.find(a=>a.id===id)
+  if(ativo){await sb.from('aportes').delete().eq('user_id',user.id).eq('ticker',ativo.ticker)}
+  await sb.from('carteira').update({ativo:false}).eq('id',id)
+  await loadCarteira(); await loadAportes(); renderAll()
+}
+
+// ── IMPORTAÇÃO EXTRATO B3 ──────────────────────────────
+window.handleImportB3 = async function(event) {
+  const file=event.target.files[0]; if(!file)return
+  const statusEl=el('importStatus')
+  statusEl.innerHTML='<div class="import-loading">lendo arquivo...</div>'
+  try {
+    const buf=await file.arrayBuffer()
+    const wb=XLSX.read(buf,{type:'array',cellDates:true})
+    const ws=wb.Sheets[wb.SheetNames[0]]
+    const rows=XLSX.utils.sheet_to_json(ws,{raw:false,defval:''})
+
+    // Parser do extrato de movimentações B3
+    // Colunas: Data, Movimentação, Produto, Instituição, Quantidade, Valor operação, Preço unitário
+    const aportesParsed=[]
+    rows.forEach(row=>{
+      // Tenta múltiplos formatos de coluna da B3
+      const mov=(row['Movimentação']||row['Tipo Movimentação']||row['Tipo']||'').toLowerCase()
+      const produto=row['Produto']||row['Ativo']||row['Código']||''
+      const dataStr=row['Data']||row['Data da Operação']||''
+      const qtd=parseFloat((row['Quantidade']||'0').toString().replace(',','.'))
+      const preco=parseFloat((row['Preço unitário']||row['Preço Unitário']||row['Valor unitário']||'0').toString().replace('R$','').replace(/\./g,'').replace(',','.'))
+
+      // Filtra só compras de FIIs e ações
+      if(!mov.includes('compra')&&!mov.includes('transferência - liquidação')) return
+      if(!produto||!dataStr||!qtd||!preco) return
+
+      // Extrai ticker do produto (ex: "MXRF11 - MAXI RENDA" → "MXRF11")
+      const ticker=produto.split(' ')[0].trim().toUpperCase()
+      if(ticker.length<5||ticker.length>7) return
+
+      // Converte data
+      let data
+      try {
+        if(dataStr.includes('/')){
+          const [d,m,y]=dataStr.split('/')
+          data=`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`
+        } else { data=dataStr.substring(0,10) }
+        if(isNaN(new Date(data))) return
+      } catch(e){ return }
+
+      aportesParsed.push({ticker,data,cotas:qtd,preco,total:qtd*preco})
+    })
+
+    if(!aportesParsed.length){
+      statusEl.innerHTML='<div class="import-error">Nenhuma compra encontrada no arquivo. Verifique se é o extrato de movimentações da B3 em formato Excel.</div>'
+      return
+    }
+
+    importPreview=aportesParsed
+    renderImportPreview()
+  } catch(e){
+    statusEl.innerHTML='<div class="import-error">Erro ao ler o arquivo. Certifique-se de que é um arquivo .xlsx da B3.</div>'
+  }
+  event.target.value=''
+}
+
+function renderImportPreview(){
+  const statusEl=el('importStatus')
+  const total=importPreview.reduce((s,a)=>s+a.total,0)
+  let rows=importPreview.map((a,i)=>`
+    <div class="aporte-row" style="font-size:11px">
+      <span class="fw">${a.ticker}</span>
+      <span class="muted">${a.cotas}c × ${fmt(a.preco)}</span>
+      <span>${new Date(a.data+'T12:00').toLocaleDateString('pt-BR')}</span>
+      <span class="green">${fmt(a.total)}</span>
+      <button class="btn-mini btn-mini-red" onclick="importPreview.splice(${i},1);renderImportPreview()">×</button>
+    </div>`).join('')
+  statusEl.innerHTML=`
+    <div class="card" style="margin-top:.75rem">
+      <div class="card-title">prévia da importação — ${importPreview.length} aportes</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">revise antes de confirmar. você pode remover linhas incorretas clicando no ×</div>
+      <div style="max-height:250px;overflow-y:auto">${rows}</div>
+      <div class="divider"></div>
+      <div style="display:flex;justify-content:space-between;font-size:12px;font-weight:500;margin-bottom:.75rem"><span>total importado</span><span>${fmt(total)}</span></div>
+      <button class="btn btn-accent" onclick="confirmarImportacao()">confirmar importação</button>
+      <button class="btn" onclick="importPreview=[];el('importStatus').innerHTML=''">cancelar</button>
+    </div>`
+}
+
+window.confirmarImportacao = async function() {
+  const btn=document.querySelector('#importStatus .btn-accent')
+  if(btn){btn.textContent='importando...';btn.disabled=true}
+  let ok=0,err=0
+  for(const a of importPreview){
+    try {
+      const {error}=await sb.from('aportes').insert({user_id:user.id,ticker:a.ticker,cotas:a.cotas,preco:a.preco,data:a.data})
+      if(error)throw error
+      // Cria/atualiza ativo
+      const exist=carteira.find(c=>c.ticker===a.ticker)
+      if(exist){
+        const nc=exist.cotas+a.cotas,npm=((exist.preco_medio*exist.cotas)+(a.preco*a.cotas))/nc
+        await sb.from('carteira').update({cotas:nc,preco_medio:+npm.toFixed(4),atualizado_em:new Date().toISOString()}).eq('id',exist.id)
+        exist.cotas=nc; exist.preco_medio=+npm.toFixed(4)
+      } else {
+        const tipo=tipoByTicker(a.ticker)
+        const {data:novo}=await sb.from('carteira').insert({user_id:user.id,ticker:a.ticker,cotas:a.cotas,preco_medio:a.preco,tipo,ativo:true}).select().single()
+        if(novo) carteira.push(novo)
+      }
+      ok++
+    } catch(e){err++}
+  }
+  importPreview=[]
+  el('importStatus').innerHTML=`<div style="font-size:13px;color:var(--green);padding:.75rem 0">✓ ${ok} aportes importados com sucesso${err>0?` (${err} com erro)`:''}</div>`
+  await loadCarteira(); await loadAportes()
+  await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
+  renderAll()
 }
 
 // ── AI ──────────────────────────────────────────────────
-window.loadAI=async function(){
+window.loadAI = async function() {
   const aiEl=el('aiText');if(!aiEl)return;aiEl.textContent='analisando sua carteira...'
-  if(!carteira.length){aiEl.textContent='Adicione seus ativos para receber análise personalizada.';return}
+  if(!carteira.length){aiEl.textContent='Registre seus aportes para receber análise personalizada.';return}
   const resumo=carteira.map(a=>{
     const p=precos[a.ticker]?.preco||a.preco_medio
     const r=((p-a.preco_medio)/a.preco_medio*100).toFixed(1)
     const acum=dividendosHist[a.ticker]?.total||0
-    return `${a.ticker}(${a.cotas}c,PM R$${a.preco_medio},hoje R$${p.toFixed(2)},${r}%,div acumulado R$${acum.toFixed(2)},div mensal R$${a.div_mes||0}/c)`
+    return `${a.ticker}(${a.cotas}c,PM R$${a.preco_medio},hoje R$${p.toFixed(2)},${r}%,div acumulado R$${acum.toFixed(2)})`
   }).join(', ')
   try{
     const data=await API.ai(resumo)
-    aiEl.textContent=data.analysis||'Carteira com bom potencial. Monitore os ativos abaixo do PM. Priorize aportes em fundos com desconto patrimonial.'
-  }catch(e){aiEl.textContent='Carteira com bom potencial. Monitore os ativos abaixo do PM. Priorize aportes em fundos com desconto patrimonial.'}
+    aiEl.textContent=data.analysis||'Carteira diversificada com bom potencial de dividendos. Monitore os ativos abaixo do PM. Priorize aportes em fundos com desconto patrimonial.'
+  }catch(e){aiEl.textContent='Carteira diversificada com bom potencial de dividendos. Monitore os ativos abaixo do PM. Priorize aportes em fundos com desconto patrimonial.'}
 }
 
-// ── TABS ────────────────────────────────────────────────
-window.switchTab=function(tab,elBtn){
+window.switchTab = function(tab,elBtn) {
   document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'))
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'))
   el(tab).classList.add('active')
@@ -412,22 +474,27 @@ a{color:var(--accent);text-decoration:none}
 .ai-box{background:var(--s1);border:.5px solid rgba(42,120,214,.3);border-radius:12px;padding:.9rem 1.1rem;margin-bottom:.9rem}
 .ai-label{font-size:11px;color:var(--accent);margin-bottom:.4rem}
 .ai-text{font-size:12px;line-height:1.65}
-.prov-row,.aporte-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:.5px solid var(--border);font-size:12px;gap:8px}
+.prov-row,.aporte-row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:.5px solid var(--border);font-size:12px;gap:6px;flex-wrap:wrap}
 .prov-row:last-child,.aporte-row:last-child{border:none}
 .divider{height:.5px;background:var(--border);margin:.65rem 0}
 .form-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:.75rem}
-.form-grid input,.form-grid select,.ticker-input{font-size:12px;padding:7px 8px;border-radius:var(--radius);border:.5px solid var(--border);background:var(--s1);color:var(--text);width:100%}
-.form-grid input:focus,.form-grid select:focus,.ticker-input:focus{outline:none;border-color:var(--accent)}
-.ticker-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
-.ticker-status{font-size:11px;min-height:16px;margin-bottom:8px;line-height:1.5}
-.form-err{font-size:11px;color:var(--red);margin-bottom:8px;min-height:14px}
+.form-grid input,.form-grid select,.form-full{font-size:12px;padding:7px 8px;border-radius:var(--radius);border:.5px solid var(--border);background:var(--s1);color:var(--text);width:100%}
+.form-grid input:focus{outline:none;border-color:var(--accent)}
+.form-err{font-size:11px;min-height:14px;margin-bottom:8px}
 .btn{display:block;width:100%;padding:9px;font-size:13px;font-weight:500;border-radius:var(--radius);cursor:pointer;text-align:center;border:.5px solid var(--border);background:transparent;color:var(--text);margin-bottom:.5rem}
-.btn-accent{background:var(--accent);color:#fff;border:none}.btn-accent:hover{opacity:.9}
+.btn-accent{background:var(--accent);color:#fff;border:none}
 .btn-mini{font-size:11px;padding:3px 8px;border-radius:6px;border:.5px solid var(--border);background:transparent;color:var(--muted);cursor:pointer}
 .btn-mini:hover{background:var(--s1);color:var(--text)}.btn-mini-red:hover{color:var(--red);border-color:var(--red)}
 .chart-wrap{position:relative;width:100%;height:180px;margin-bottom:.5rem}
 .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:.65rem}
 .empty{text-align:center;padding:1.5rem;color:var(--muted);font-size:12px;line-height:1.7}
+.import-zone{border:1.5px dashed var(--border);border-radius:12px;padding:1.5rem;text-align:center;cursor:pointer;margin-bottom:.75rem}
+.import-zone:hover{border-color:var(--accent)}
+.import-zone input{display:none}
+.import-title{font-size:14px;font-weight:500;margin-bottom:4px}
+.import-sub{font-size:12px;color:var(--muted);line-height:1.6}
+.import-loading{font-size:13px;color:var(--muted);padding:.75rem 0}
+.import-error{font-size:12px;color:var(--red);padding:.75rem 0}
 #modalDiv{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center;padding:1rem}
 .modal-box{background:var(--s1);border:.5px solid var(--border);border-radius:16px;padding:1.25rem;width:100%;max-width:380px;max-height:80vh;overflow-y:auto}
 .modal-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem}
@@ -436,6 +503,8 @@ a{color:var(--accent);text-decoration:none}
 </style>
 </head>
 <body>
+
+<!-- AUTH -->
 <div id="authScreen">
   <div class="auth-box">
     <div class="auth-logo">Inve<span>xa</span></div>
@@ -451,6 +520,8 @@ a{color:var(--accent);text-decoration:none}
     <div class="auth-switch" id="switchMode">Não tem conta? <a href="#" onclick="setAuthMode('cadastro')">Criar com convite</a></div>
   </div>
 </div>
+
+<!-- APP -->
 <div id="appScreen">
   <div class="app-header">
     <div class="app-logo">Inve<span>xa ● ao vivo</span></div>
@@ -465,8 +536,10 @@ a{color:var(--accent);text-decoration:none}
     <button class="tab" data-tab="evolucao" onclick="switchTab('evolucao',this)">evolução</button>
     <button class="tab" data-tab="proventos" onclick="switchTab('proventos',this)">proventos</button>
     <button class="tab" data-tab="aportes" onclick="switchTab('aportes',this)">aportes</button>
-    <button class="tab" data-tab="adicionar" onclick="switchTab('adicionar',this)">+ ativo</button>
+    <button class="tab" data-tab="importar" onclick="switchTab('importar',this)">importar</button>
   </div>
+
+  <!-- PAINEL -->
   <div id="painel" class="section active">
     <div class="kpi-grid">
       <div class="kpi"><div class="kpi-label">patrimônio estimado</div><div class="kpi-val" id="kpiPatrimonio">—</div></div>
@@ -482,7 +555,11 @@ a{color:var(--accent);text-decoration:none}
     </div>
     <div class="ai-box"><div class="ai-label">✦ análise ia — hoje</div><div class="ai-text" id="aiText">carregando...</div></div>
   </div>
+
+  <!-- ATIVOS -->
   <div id="ativos" class="section"><div id="ativosList"></div></div>
+
+  <!-- EVOLUÇÃO -->
   <div id="evolucao" class="section">
     <div class="card">
       <div class="card-title">evolução do patrimônio</div>
@@ -499,6 +576,8 @@ a{color:var(--accent);text-decoration:none}
       <div class="legend" id="pizzaLegend"></div>
     </div>
   </div>
+
+  <!-- PROVENTOS -->
   <div id="proventos" class="section">
     <div class="card">
       <div class="card-title">dividendos mensais estimados</div>
@@ -512,48 +591,62 @@ a{color:var(--accent);text-decoration:none}
       <div style="font-size:22px;font-weight:500" class="green" id="totalProvAcumulado">—</div>
     </div>
   </div>
+
+  <!-- APORTES -->
   <div id="aportes" class="section">
     <div class="card">
       <div class="card-title">registrar aporte</div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">informe a data real da compra — usamos ela para calcular os dividendos que você recebeu.</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">informe a data real da compra — pode ser uma data passada. o app calcula o preço médio e os dividendos recebidos automaticamente.</div>
       <div class="form-grid">
         <input type="text" id="apTicker" placeholder="ticker (ex: MXRF11)" style="text-transform:uppercase">
         <input type="date" id="apData">
-        <input type="number" id="apCotas" placeholder="cotas compradas" min="1">
-        <input type="number" id="apPreco" placeholder="preço pago R$" step="0.01">
+        <input type="number" id="apCotas" placeholder="cotas compradas" min="1" step="1">
+        <input type="number" id="apPreco" placeholder="preço pago por cota R$" step="0.01">
       </div>
-      <div class="form-err" id="apError"></div>
-      <button class="btn btn-accent" onclick="registrarAporte()">registrar aporte</button>
+      <div class="form-err" id="apError" style="color:var(--red)"></div>
+      <button class="btn btn-accent" id="btnAporte" onclick="registrarAporte()">registrar aporte</button>
     </div>
-    <div class="card"><div class="card-title">histórico de aportes</div><div id="aportesList"></div><div id="aportesTotais"></div></div>
-  </div>
-  <div id="adicionar" class="section">
     <div class="card">
-      <div class="card-title">cadastrar / editar ativo</div>
-      <div class="ticker-row">
-        <input type="text" class="ticker-input" id="atTicker" placeholder="ticker (ex: MXRF11)" style="text-transform:uppercase" onblur="buscarDadosTicker()">
-        <select class="ticker-input" id="atTipo">
-          <option value="FII">FII</option><option value="FIAgro">FIAgro</option>
-          <option value="Ação">Ação</option><option value="Tesouro">Tesouro</option>
-        </select>
+      <div class="card-title">histórico de aportes</div>
+      <div id="aportesList"></div>
+      <div id="aportesTotais"></div>
+    </div>
+  </div>
+
+  <!-- IMPORTAR -->
+  <div id="importar" class="section">
+    <div class="card">
+      <div class="card-title">importar extrato da B3</div>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem;line-height:1.7">
+        Importe seu histórico completo de compras diretamente da B3.<br>
+        Funciona com qualquer corretora — os dados vêm da custódia da B3.
       </div>
-      <div class="ticker-status muted" id="tickerStatus"></div>
-      <div class="form-grid">
-        <input type="number" id="atCotas" placeholder="total de cotas" step="0.01">
-        <input type="number" id="atPM" placeholder="preço médio R$" step="0.01">
-        <input type="number" id="atDivMes" placeholder="div. mensal R$ (auto)" step="0.0001">
-        <input type="number" id="atDY" placeholder="DY 12m % (auto)" step="0.01">
+      <label class="import-zone">
+        <input type="file" accept=".xlsx,.xls" onchange="handleImportB3(event)">
+        <div class="import-title">📂 selecionar arquivo Excel da B3</div>
+        <div class="import-sub">toque aqui para escolher o arquivo .xlsx<br>exportado em <b>investidor.b3.com.br</b></div>
+      </label>
+      <div id="importStatus"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">como exportar o extrato da B3</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.8">
+        1. Acesse <b style="color:var(--text)">investidor.b3.com.br</b><br>
+        2. Faça login com sua conta<br>
+        3. Vá em <b style="color:var(--text)">Extratos → Movimentações</b><br>
+        4. Selecione o período desejado<br>
+        5. Clique em <b style="color:var(--text)">Exportar → Excel (.xlsx)</b><br>
+        6. Importe o arquivo aqui
       </div>
-      <div style="font-size:11px;color:var(--muted);margin-bottom:.75rem;line-height:1.6">✦ dividendo e DY buscados automaticamente ao digitar o ticker.</div>
-      <div class="form-err" id="ativoError"></div>
-      <button class="btn btn-accent" onclick="salvarAtivo()">salvar ativo</button>
     </div>
   </div>
 </div>
+
+<!-- MODAL -->
 <div id="modalDiv" onclick="if(event.target===this)fecharModal()">
   <div class="modal-box">
     <div class="modal-header">
-      <span class="modal-title">dividendos recebidos — <span id="modalTicker"></span></span>
+      <span class="modal-title">dividendos — <span id="modalTicker"></span></span>
       <button class="modal-close" onclick="fecharModal()">×</button>
     </div>
     <div id="modalBody"></div>
