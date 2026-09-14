@@ -63,7 +63,7 @@ window.logout = async function() { await sb.auth.signOut() }
 
 // ── APP ────────────────────────────────────────────────
 async function showApp() {
-  el('authScreen').style.display='none'; el('appScreen').style.display='block'
+  el('authScreen').style.display='none'; el('appScreen').style.display='block'; const emailEl=el('contaEmail'); if(emailEl) emailEl.textContent=user.email
   await Promise.all([loadCarteira(),loadAportes()])
   await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
   renderAll(); loadAI()
@@ -300,51 +300,69 @@ window.handleImportB3 = async function(event) {
   statusEl.innerHTML='<div class="import-loading">lendo arquivo...</div>'
   try {
     const buf=await file.arrayBuffer()
-    const wb=XLSX.read(buf,{type:'array',cellDates:true})
+    const wb=XLSX.read(buf,{type:'array'})
     const ws=wb.Sheets[wb.SheetNames[0]]
-    const rows=XLSX.utils.sheet_to_json(ws,{raw:false,defval:''})
+    // Lê sem header para pegar linha 0 como cabeçalho
+    const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''})
+    if(!rows.length){statusEl.innerHTML='<div class="import-error">Arquivo vazio.</div>';return}
 
-    // Parser do extrato de movimentações B3
-    // Colunas: Data, Movimentação, Produto, Instituição, Quantidade, Valor operação, Preço unitário
+    // Identifica índices das colunas pelo cabeçalho real da B3
+    const header=rows[0].map(h=>(h||'').toString().trim().toLowerCase())
+    const idx={
+      entrada: header.indexOf('entrada/saída'),
+      data: header.indexOf('data'),
+      mov: header.indexOf('movimentação'),
+      produto: header.indexOf('produto'),
+      qtd: header.indexOf('quantidade'),
+      preco: header.indexOf('preço unitário')
+    }
+
     const aportesParsed=[]
-    rows.forEach(row=>{
-      // Tenta múltiplos formatos de coluna da B3
-      const mov=(row['Movimentação']||row['Tipo Movimentação']||row['Tipo']||'').toLowerCase()
-      const produto=row['Produto']||row['Ativo']||row['Código']||''
-      const dataStr=row['Data']||row['Data da Operação']||''
-      const qtd=parseFloat((row['Quantidade']||'0').toString().replace(',','.'))
-      const preco=parseFloat((row['Preço unitário']||row['Preço Unitário']||row['Valor unitário']||'0').toString().replace('R$','').replace(/\./g,'').replace(',','.'))
+    for(let i=1;i<rows.length;i++){
+      const row=rows[i]
+      const entrada=(row[idx.entrada]||'').toString().trim().toLowerCase()
+      const mov=(row[idx.mov]||'').toString().trim().toLowerCase()
+      const produto=(row[idx.produto]||'').toString().trim()
+      const dataStr=(row[idx.data]||'').toString().trim()
+      const qtdRaw=(row[idx.qtd]||'').toString().trim()
+      const precoRaw=(row[idx.preco]||'').toString().trim()
 
-      // Filtra só compras de FIIs e ações
-      if(!mov.includes('compra')&&!mov.includes('transferência - liquidação')) return
-      if(!produto||!dataStr||!qtd||!preco) return
+      // Filtra: só Credito + Transferência - Liquidação + preço válido
+      if(entrada!=='credito') continue
+      if(!mov.includes('transferência - liquidação')) continue
+      if(!precoRaw||precoRaw==='-') continue
 
-      // Extrai ticker do produto (ex: "MXRF11 - MAXI RENDA" → "MXRF11")
-      const ticker=produto.split(' ')[0].trim().toUpperCase()
-      if(ticker.length<5||ticker.length>7) return
+      const qtd=parseFloat(qtdRaw)
+      const preco=parseFloat(precoRaw.replace(',','.'))
+      if(!qtd||!preco||isNaN(qtd)||isNaN(preco)) continue
 
-      // Converte data
+      // Ticker: parte antes do primeiro " - "
+      const ticker=produto.split(' - ')[0].trim().toUpperCase()
+      if(ticker.length<4||ticker.length>7) continue
+
+      // Converte data DD/MM/YYYY → YYYY-MM-DD
       let data
       try {
         if(dataStr.includes('/')){
           const [d,m,y]=dataStr.split('/')
           data=`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`
-        } else { data=dataStr.substring(0,10) }
-        if(isNaN(new Date(data))) return
-      } catch(e){ return }
+        } else if(dataStr.includes('-')){ data=dataStr.substring(0,10) }
+        else continue
+        if(isNaN(new Date(data).getTime())) continue
+      } catch(e){ continue }
 
-      aportesParsed.push({ticker,data,cotas:qtd,preco,total:qtd*preco})
-    })
+      aportesParsed.push({ticker,data,cotas:qtd,preco,total:+(qtd*preco).toFixed(2)})
+    }
 
     if(!aportesParsed.length){
-      statusEl.innerHTML='<div class="import-error">Nenhuma compra encontrada no arquivo. Verifique se é o extrato de movimentações da B3 em formato Excel.</div>'
+      statusEl.innerHTML='<div class="import-error">Nenhuma compra encontrada. Certifique-se de que é o extrato de <b>Movimentações</b> da B3 (não o de posição).</div>'
       return
     }
 
     importPreview=aportesParsed
     renderImportPreview()
   } catch(e){
-    statusEl.innerHTML='<div class="import-error">Erro ao ler o arquivo. Certifique-se de que é um arquivo .xlsx da B3.</div>'
+    statusEl.innerHTML='<div class="import-error">Erro ao ler o arquivo: '+e.message+'</div>'
   }
   event.target.value=''
 }
@@ -424,6 +442,29 @@ window.switchTab = function(tab,elBtn) {
   if(elBtn)elBtn.classList.add('active')
   else document.querySelectorAll('.tab').forEach(t=>{if(t.dataset.tab===tab)t.classList.add('active')})
   if(tab==='evolucao')setTimeout(renderCharts,100)
+}
+
+// ── RESET COMPLETO ────────────────────────────────────
+window.abrirReset = function() { el('modalReset').style.display='flex' }
+window.fecharReset = function() { el('modalReset').style.display='none'; el('resetConfirm').value='' }
+window.confirmarReset = async function() {
+  const confirmEl=el('resetConfirm')
+  if(confirmEl.value.trim().toUpperCase()!=='CONFIRMAR'){
+    el('resetError').textContent='digite CONFIRMAR para prosseguir.'
+    return
+  }
+  const btn=el('btnConfirmarReset'); btn.textContent='apagando...'; btn.disabled=true
+  try {
+    await sb.from('aportes').delete().eq('user_id',user.id)
+    await sb.from('carteira').update({ativo:false}).eq('user_id',user.id)
+    carteira=[]; aportes=[]; precos={}; dividendosHist={}
+    fecharReset()
+    renderAll()
+    el('aiText').textContent='Carteira zerada. Registre seus aportes para começar.'
+  } catch(e){
+    el('resetError').textContent='erro ao resetar. tente novamente.'
+  }
+  btn.textContent='sim, apagar tudo'; btn.disabled=false
 }
 
 init()
@@ -537,6 +578,7 @@ a{color:var(--accent);text-decoration:none}
     <button class="tab" data-tab="proventos" onclick="switchTab('proventos',this)">proventos</button>
     <button class="tab" data-tab="aportes" onclick="switchTab('aportes',this)">aportes</button>
     <button class="tab" data-tab="importar" onclick="switchTab('importar',this)">importar</button>
+    <button class="tab" data-tab="conta" onclick="switchTab('conta',this)">conta</button>
   </div>
 
   <!-- PAINEL -->
@@ -642,6 +684,23 @@ a{color:var(--accent);text-decoration:none}
   </div>
 </div>
 
+<!-- CONTA -->
+  <div id="conta" class="section">
+    <div class="card">
+      <div class="card-title">minha conta</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:1rem" id="contaEmail"></div>
+      <button class="btn" onclick="logout()">sair da conta</button>
+    </div>
+    <div class="card" style="border-color:rgba(227,73,72,.3)">
+      <div class="card-title" style="color:var(--red)">zona de perigo</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:.75rem;line-height:1.7">
+        O reset apaga <b style="color:var(--text)">todos os seus aportes e ativos</b> permanentemente.<br>
+        Essa ação não pode ser desfeita.
+      </div>
+      <button class="btn" style="border-color:var(--red);color:var(--red)" onclick="abrirReset()">resetar carteira</button>
+    </div>
+  </div>
+
 <!-- MODAL -->
 <div id="modalDiv" onclick="if(event.target===this)fecharModal()">
   <div class="modal-box">
@@ -650,6 +709,20 @@ a{color:var(--accent);text-decoration:none}
       <button class="modal-close" onclick="fecharModal()">×</button>
     </div>
     <div id="modalBody"></div>
+  </div>
+</div>
+<!-- MODAL RESET -->
+<div id="modalReset" onclick="if(event.target===this)fecharReset()" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:200;align-items:center;justify-content:center;padding:1rem">
+  <div style="background:var(--s1);border:.5px solid rgba(227,73,72,.4);border-radius:16px;padding:1.5rem;width:100%;max-width:340px">
+    <div style="font-size:16px;font-weight:500;color:var(--red);margin-bottom:.5rem">resetar carteira</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:1.25rem;line-height:1.7">
+      Isso vai apagar <b style="color:var(--text)">todos os seus aportes e ativos</b>.<br>
+      Digite <b style="color:var(--text)">CONFIRMAR</b> abaixo para prosseguir.
+    </div>
+    <input type="text" id="resetConfirm" placeholder="digite CONFIRMAR" style="width:100%;padding:9px 12px;background:var(--s2);border:.5px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px;margin-bottom:.5rem">
+    <div style="font-size:11px;color:var(--red);min-height:14px;margin-bottom:.75rem" id="resetError"></div>
+    <button class="btn" id="btnConfirmarReset" style="background:var(--red);color:#fff;border:none;margin-bottom:.5rem" onclick="confirmarReset()">sim, apagar tudo</button>
+    <button class="btn" onclick="fecharReset()">cancelar</button>
   </div>
 </div>
 </body>
