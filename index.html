@@ -11,15 +11,13 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const SUPABASE_URL='https://xxidrfxkykpwacvpdllv.supabase.co'
 const SUPABASE_KEY='sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
 const sb=createClient(SUPABASE_URL,SUPABASE_KEY)
-async function getAuthHeader(){
-  const{data:{session}}=await sb.auth.getSession()
-  return session?.access_token?{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token}:{'Content-Type':'application/json'}
-}
+import { createAIClient } from './ai-client.js'
+const aiClient = createAIClient(sb)
 const API={
   quote:(t)=>fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
   dividends:(t)=>fetch(`/api/dividends?ticker=${t}`).then(r=>r.json()),
-  ai:async(c,p)=>{const h=await getAuthHeader();return fetch('/api/ai',{method:'POST',headers:h,body:JSON.stringify({carteira:c,perfil:p})}).then(r=>r.json())},
-  assistant:async(m,h,c,p)=>{const hd=await getAuthHeader();return fetch('/api/assistant',{method:'POST',headers:hd,body:JSON.stringify({mensagem:m,historico:h,carteira:c,perfil:p})}).then(r=>r.json())}
+  ai:(c,p)=>aiClient.ai(c,p),
+  assistant:(m,h,c,p)=>aiClient.assistant(m,h,c,p)
 }
 let user=null,carteira=[],aportes=[],precos={},dividendosHist={},charts={},importPreview=[],chatHistorico=[],perfil=null
 
