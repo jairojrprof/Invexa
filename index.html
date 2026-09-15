@@ -11,11 +11,15 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const SUPABASE_URL='https://xxidrfxkykpwacvpdllv.supabase.co'
 const SUPABASE_KEY='sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
 const sb=createClient(SUPABASE_URL,SUPABASE_KEY)
+async function getAuthHeader(){
+  const{data:{session}}=await sb.auth.getSession()
+  return session?.access_token?{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token}:{'Content-Type':'application/json'}
+}
 const API={
   quote:(t)=>fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
   dividends:(t)=>fetch(`/api/dividends?ticker=${t}`).then(r=>r.json()),
-  ai:(c,p)=>fetch('/api/ai',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({carteira:c,perfil:p})}).then(r=>r.json()),
-  assistant:(m,h,c,p)=>fetch('/api/assistant',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mensagem:m,historico:h,carteira:c,perfil:p})}).then(r=>r.json())
+  ai:async(c,p)=>{const h=await getAuthHeader();return fetch('/api/ai',{method:'POST',headers:h,body:JSON.stringify({carteira:c,perfil:p})}).then(r=>r.json())},
+  assistant:async(m,h,c,p)=>{const hd=await getAuthHeader();return fetch('/api/assistant',{method:'POST',headers:hd,body:JSON.stringify({mensagem:m,historico:h,carteira:c,perfil:p})}).then(r=>r.json())}
 }
 let user=null,carteira=[],aportes=[],precos={},dividendosHist={},charts={},importPreview=[],chatHistorico=[],perfil=null
 
@@ -69,7 +73,7 @@ async function showApp(){
 async function loadCarteira(){const{data}=await sb.from('carteira').select('*').eq('user_id',user.id).eq('ativo',true);carteira=data||[]}
 async function loadAportes(){const{data}=await sb.from('aportes').select('*').eq('user_id',user.id).order('data',{ascending:true});aportes=data||[]}
 async function loadPerfil(){const{data}=await sb.from('perfil_investidor').select('*').eq('user_id',user.id).single();perfil=data||null;renderPerfil()}
-async function loadChatHistorico(){const{data}=await sb.from('chat_historico').select('*').eq('user_id',user.id).order('criado_em',{ascending:true}).limit(50);chatHistorico=data||[]}
+async function loadChatHistorico(){const{data}=await sb.from('chat_historico').select('*').eq('user_id',user.id).order('criado_em',{ascending:false}).limit(50);chatHistorico=(data||[]).reverse()}
 async function loadQuotes(){
   if(!carteira.length)return
   try{const data=await API.quote(carteira.map(a=>a.ticker).join(','));if(data.results)data.results.forEach(r=>{precos[r.symbol]={preco:r.regularMarketPrice,var:r.regularMarketChangePercent}})}catch(e){}
@@ -269,16 +273,17 @@ window.enviarMensagem=async function(){
   c.innerHTML+=`<div class="chat-msg chat-ai"><div class="chat-bubble chat-loading"><span></span><span></span><span></span></div></div>`
   c.scrollTop=c.scrollHeight
   try{
-    const data=await API.assistant(msg,chatHistorico.slice(-10),carteiraSummary(),perfil)
-    const resposta=data.resposta||'Desculpe, não consegui processar sua pergunta. Tente novamente.'
+    const data=await API.assistant(msg,chatHistorico.slice(-8),carteiraSummary(),perfil)
+    const resposta=data.resposta||(data.error?'⚠ '+data.error:'Não consegui processar. Tente novamente.')
     const{data:aiMsg}=await sb.from('chat_historico').insert({user_id:user.id,role:'assistant',conteudo:resposta}).select().single()
     if(aiMsg)chatHistorico.push(aiMsg)
   }catch(e){
-    const fallback='Não consegui me conectar no momento. Verifique sua conexão e tente novamente.'
-    await sb.from('chat_historico').insert({user_id:user.id,role:'assistant',conteudo:fallback})
+    const fallback='⚠ Não foi possível conectar. Verifique sua conexão e tente novamente.'
+    try{await sb.from('chat_historico').insert({user_id:user.id,role:'assistant',conteudo:fallback})}catch(_){}
     chatHistorico.push({role:'assistant',conteudo:fallback})
+  }finally{
+    input.disabled=false;input.focus()
   }
-  input.disabled=false;input.focus()
   renderChat()
 }
 
@@ -424,8 +429,9 @@ window.loadAI=async function(){
   if(!carteira.length){aiEl.textContent='Registre seus aportes para receber análise personalizada.';return}
   try{
     const data=await API.ai(carteiraSummary(),perfil)
-    aiEl.textContent=data.analysis||'Carteira com bom potencial. Configure seu perfil para análise personalizada.'
-  }catch(e){aiEl.textContent='Carteira com bom potencial. Configure seu perfil para análise personalizada.'}
+    if(data.error){aiEl.textContent='⚠ '+data.error;return}
+    aiEl.textContent=data.analysis||'Análise indisponível no momento.'
+  }catch(e){aiEl.textContent='⚠ Não foi possível conectar ao assistente. Tente atualizar.'}
 }
 
 // ── TABS ───────────────────────────────────────────────
