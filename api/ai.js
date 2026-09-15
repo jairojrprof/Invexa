@@ -26,7 +26,7 @@ export default async function handler(req, res) {
       ? `Objetivo: ${perfil.objetivo || 'não informado'}, Horizonte: ${perfil.horizonte || 'não informado'}, Risco: ${perfil.risco || 'não informado'}, Aporte mensal: ${perfil.aporte_mensal ? 'R$ ' + perfil.aporte_mensal : 'não informado'}, Observações: ${perfil.observacoes || 'nenhuma'}`
       : 'Perfil não configurado — responda de forma genérica'
 
-    const prompt = `Você é analista de FIIs brasileiro experiente. Analise esta carteira considerando o perfil. Responda em 4-5 frases diretas e personalizadas: mencione ativos específicos, pontos positivos, pontos de atenção e uma sugestão prática alinhada ao perfil. Seja próximo e claro — nunca genérico. Os preços podem estar desatualizados, use como referência.\n\n${perfilCtx}\n\nCarteira: ${carteira}`
+    const prompt = `Você é analista de investimentos brasileiro experiente. Analise esta carteira considerando o perfil. Responda em 4-5 frases diretas e personalizadas: mencione ativos específicos, pontos positivos, pontos de atenção e uma sugestão prática alinhada ao perfil. Seja próximo e claro — nunca genérico. Os preços podem estar desatualizados, use como referência.\n\n${perfilCtx}\n\nCarteira: ${carteira}`
 
     const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent'
     const response = await fetch(url, {
