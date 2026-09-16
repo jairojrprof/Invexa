@@ -13,6 +13,8 @@ const SUPABASE_KEY='sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
 const sb=createClient(SUPABASE_URL,SUPABASE_KEY)
 import { createAIClient } from './ai-client.js'
 import { appendChatMessage } from './chat-ui.js'
+import { createSignupClient } from './signup-client.js'
+const signupClient = createSignupClient(sb)
 const aiClient = createAIClient(sb)
 const API={
   quote:(t)=>fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
@@ -47,17 +49,22 @@ window.login=async function(){
   if(error){set('authError','Email ou senha incorretos.');btn.textContent='entrar';btn.disabled=false}
 }
 window.cadastrar=async function(){
-  const convite=val('authConvite').toUpperCase(),btn=el('btnCadastro'),errEl=el('authError')
-  if(!convite){errEl.textContent='código de convite obrigatório.';return}
-  btn.textContent='verificando...';btn.disabled=true
-  const{data:conv,error:ce}=await sb.from('convites').select('*').eq('codigo',convite).eq('ativo',true).single()
-  if(ce||!conv||conv.usado_por){errEl.textContent='Convite inválido ou já utilizado.';btn.textContent='criar conta';btn.disabled=false;return}
-  const{data:sd,error:se}=await sb.auth.signUp({email:val('authEmail'),password:val('authSenha')})
-  if(se){errEl.textContent=se.message;btn.textContent='criar conta';btn.disabled=false;return}
-  await sb.from('profiles').update({nome:val('authNome'),convite_usado:convite}).eq('id',sd.user.id)
-  await sb.from('convites').update({usado_por:sd.user.id,usado_em:new Date().toISOString(),ativo:false}).eq('codigo',convite)
-  errEl.style.color='var(--green)';errEl.textContent='Conta criada! Verifique seu email.'
-  btn.textContent='criar conta';btn.disabled=false
+  const btn=el('btnCadastro'),errEl=el('authError')
+  if(btn.disabled)return
+  btn.textContent='criando conta...';btn.disabled=true
+  errEl.textContent='';errEl.style.color='var(--red)'
+  try{
+    const result=await signupClient({email:val('authEmail'),password:val('authSenha'),nome:val('authNome'),convite:val('authConvite')})
+    el('authSenha').value=''
+    if(!result.hasSession){
+      errEl.style.color='var(--green)'
+      errEl.textContent='Se o cadastro foi aceito, você receberá um email de confirmação. Se já possui conta, entre com sua senha.'
+    }
+  }catch(error){
+    errEl.textContent=error.message||'Não foi possível criar a conta. Tente novamente.'
+  }finally{
+    btn.textContent='criar conta';btn.disabled=false
+  }
 }
 window.logout=async function(){await sb.auth.signOut()}
 

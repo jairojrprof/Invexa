@@ -11,7 +11,7 @@ Base: auditoria de 15/09/2026 e código do GitHub no commit `54970b26e046be7c303
 
 ## Pendências da auditoria
 
-1. Obter o esquema, as políticas RLS, funções e triggers do Supabase para verificar isolamento entre usuários e cadastro por convite. Esses elementos não estão nos arquivos de código do repositório. Não presumir que as políticas estejam ausentes ou incorretas no banco real.
+1. Auditoria do esquema e das políticas realizada pelo conector em 16/09/2026: RLS ativa nas sete tabelas; leituras privadas isoladas nos testes; convites acessíveis sem login e plano editável pelo dono do perfil. Correções preparadas e testadas em banco isolado; implantação pendente. Detalhes em [cadastro-seguro.md](cadastro-seguro.md).
 2. Proteger as APIs de cotação e dividendos com autenticação, limites de uso e cache.
 3. Revisar os demais usos de `innerHTML`, especialmente tickers, atributos de eventos, prévia de importação e mensagens de erro. A correção desta rodada é específica ao chat.
 4. Tornar aportes, carteira e importações transacionais; verificar erros antes de confirmar sucesso.
@@ -22,6 +22,6 @@ Base: auditoria de 15/09/2026 e código do GitHub no commit `54970b26e046be7c303
 
 ## Limites da validação
 
-Os sete testes passaram no runtime local Node 24.19.0 com `node --test --experimental-test-isolation=none tests/ui.test.mjs`. A execução padrão tentou criar subprocessos e foi bloqueada pelo ambiente local; por isso foi usada a execução sem isolamento em subprocessos. A configuração de produção continua em Node 22 e ainda precisa ser validada nesse ambiente.
+Na primeira rodada, os sete testes de interface passaram em Node 24.19.0. Na rodada de cadastro/segurança, a suíte ampliada passou com 31 testes em Node 22.23.2 e PostgreSQL 17.10, incluindo concorrência real no banco isolado. Foi usada execução sem isolamento em subprocessos por restrições do ambiente local.
 
-Os testes desta rodada usam um DOM mínimo e um substituto do Chart.js. Não verificam login real, Supabase, BRAPI, Gemini ou o visual no navegador. A auditoria de segurança completa e a validação dos cálculos financeiros continuam pendentes.
+Os testes de interface usam um DOM mínimo e um substituto do Chart.js. Os testes SQL usam PostgreSQL real, dados fictícios e uma representação mínima de Auth. Ainda não verificam login/confirmação de email no Auth hospedado, BRAPI, Gemini ou o visual no navegador. Os cálculos financeiros e os demais pontos de segurança continuam pendentes.
