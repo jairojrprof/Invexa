@@ -12,6 +12,9 @@ const SUPABASE_URL='https://xxidrfxkykpwacvpdllv.supabase.co'
 const SUPABASE_KEY='sb_publishable_gUUtdhC7kIbBqaZffkzm6Q_9UTGV7RI'
 const sb=createClient(SUPABASE_URL,SUPABASE_KEY)
 import { createAIClient } from './ai-client.js'
+import { appendChatMessage } from './chat-ui.js'
+import { createSignupClient } from './signup-client.js'
+const signupClient = createSignupClient(sb)
 const aiClient = createAIClient(sb)
 const API={
   quote:(t)=>fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
@@ -46,17 +49,22 @@ window.login=async function(){
   if(error){set('authError','Email ou senha incorretos.');btn.textContent='entrar';btn.disabled=false}
 }
 window.cadastrar=async function(){
-  const convite=val('authConvite').toUpperCase(),btn=el('btnCadastro'),errEl=el('authError')
-  if(!convite){errEl.textContent='código de convite obrigatório.';return}
-  btn.textContent='verificando...';btn.disabled=true
-  const{data:conv,error:ce}=await sb.from('convites').select('*').eq('codigo',convite).eq('ativo',true).single()
-  if(ce||!conv||conv.usado_por){errEl.textContent='Convite inválido ou já utilizado.';btn.textContent='criar conta';btn.disabled=false;return}
-  const{data:sd,error:se}=await sb.auth.signUp({email:val('authEmail'),password:val('authSenha')})
-  if(se){errEl.textContent=se.message;btn.textContent='criar conta';btn.disabled=false;return}
-  await sb.from('profiles').update({nome:val('authNome'),convite_usado:convite}).eq('id',sd.user.id)
-  await sb.from('convites').update({usado_por:sd.user.id,usado_em:new Date().toISOString(),ativo:false}).eq('codigo',convite)
-  errEl.style.color='var(--green)';errEl.textContent='Conta criada! Verifique seu email.'
-  btn.textContent='criar conta';btn.disabled=false
+  const btn=el('btnCadastro'),errEl=el('authError')
+  if(btn.disabled)return
+  btn.textContent='criando conta...';btn.disabled=true
+  errEl.textContent='';errEl.style.color='var(--red)'
+  try{
+    const result=await signupClient({email:val('authEmail'),password:val('authSenha'),nome:val('authNome'),convite:val('authConvite')})
+    el('authSenha').value=''
+    if(!result.hasSession){
+      errEl.style.color='var(--green)'
+      errEl.textContent='Se o cadastro foi aceito, você receberá um email de confirmação. Se já possui conta, entre com sua senha.'
+    }
+  }catch(error){
+    errEl.textContent=error.message||'Não foi possível criar a conta. Tente novamente.'
+  }finally{
+    btn.textContent='criar conta';btn.disabled=false
+  }
 }
 window.logout=async function(){await sb.auth.signOut()}
 
@@ -194,18 +202,8 @@ function renderAportesList(){
 }
 
 function renderCharts(){
-  const meses=['Abr','Mai','Jun','Jul','Ago','Set']
-  const custo=carteira.reduce((s,a)=>s+a.preco_medio*a.cotas,0)||1000
-  const patrimonios=[custo*.94,custo*.95,custo*.96,custo*.97,custo*.96,custo*.97]
-  const totalDivMes=carteira.reduce((s,a)=>s+(dividendosHist[a.ticker]?.divMes||0)*a.cotas,0)
-  const divsMes=meses.map((_,i)=>+(totalDivMes*(0.85+i*0.03)).toFixed(2))
-  const gc='#898781',grid='rgba(128,128,128,0.1)'
-  const baseOpts={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{x:{grid:{display:false},ticks:{color:gc,font:{size:10}}},y:{grid:{color:grid},ticks:{color:gc,font:{size:10}}}}}
-  ;['chartEvolucao','chartDividendos','chartPizza'].forEach(id=>{if(charts[id]){charts[id].destroy();charts[id]=null}})
-  const ev=el('chartEvolucao')
-  if(ev)charts.chartEvolucao=new Chart(ev,{type:'line',data:{labels:meses,datasets:[{data:patrimonios,borderColor:'#2a78d6',borderWidth:2,pointRadius:3,tension:.3,fill:false},{data:meses.map(()=>custo),borderColor:'#1baf7a',borderWidth:1.5,borderDash:[4,3],pointRadius:0,fill:false}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+Math.round(v/1000)+'k'}}}}})
-  const dv=el('chartDividendos')
-  if(dv)charts.chartDividendos=new Chart(dv,{type:'bar',data:{labels:meses,datasets:[{data:divsMes,backgroundColor:'#2a78d6',borderRadius:4}]},options:{...baseOpts,scales:{...baseOpts.scales,y:{...baseOpts.scales.y,ticks:{...baseOpts.scales.y.ticks,callback:v=>'R$'+v.toFixed(0)}}}}})
+  if(charts.chartPizza){charts.chartPizza.destroy();charts.chartPizza=null}
+  const legend=el('pizzaLegend');if(legend)legend.textContent=''
   const pz=el('chartPizza')
   if(pz&&carteira.length){
     const cores=['#2a78d6','#eb6834','#1baf7a','#eda100','#e87ba4','#6250d6','#e34948','#73726c','#639922','#185fa5']
@@ -251,10 +249,7 @@ function renderChat(){
     c.innerHTML='<div class="chat-welcome"><div class="chat-welcome-icon">✦</div><div class="chat-welcome-title">Olá! Sou seu assistente financeiro.</div><div class="chat-welcome-sub">Configure seu perfil na aba acima e me pergunte qualquer coisa sobre sua carteira, estratégia ou ativos específicos.</div></div>'
     return
   }
-  chatHistorico.forEach(m=>{
-    const isUser=m.role==='user'
-    c.innerHTML+=`<div class="chat-msg ${isUser?'chat-user':'chat-ai'}"><div class="chat-bubble">${m.conteudo.replace(/\n/g,'<br>')}</div></div>`
-  })
+  chatHistorico.forEach(m=>appendChatMessage(c,m))
   c.scrollTop=c.scrollHeight
 }
 
@@ -609,13 +604,9 @@ a{color:var(--accent);text-decoration:none}
   <div id="evolucao" class="section">
     <div class="card">
       <div class="card-title">evolução do patrimônio</div>
-      <div style="display:flex;gap:12px;font-size:11px;color:var(--muted);margin-bottom:8px">
-        <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#2a78d6;margin-right:3px"></span>patrimônio</span>
-        <span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#1baf7a;margin-right:3px"></span>custo</span>
-      </div>
-      <div class="chart-wrap"><canvas id="chartEvolucao"></canvas></div>
+      <div class="empty">O histórico de patrimônio ainda não está disponível.</div>
     </div>
-    <div class="card"><div class="card-title">dividendos por mês</div><div class="chart-wrap"><canvas id="chartDividendos"></canvas></div></div>
+    <div class="card"><div class="card-title">dividendos por mês</div><div class="empty">O histórico mensal de dividendos ainda não está disponível.</div></div>
     <div class="card">
       <div class="card-title">composição da carteira</div>
       <div style="position:relative;width:100%;height:160px"><canvas id="chartPizza"></canvas></div>
