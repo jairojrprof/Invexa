@@ -41,7 +41,7 @@ test('segurança de cadastro e perfil em PostgreSQL isolado',async t=>{
     const legacy=randomUUID()
     await db.query('insert into auth.users(id,email) values ($1,$2)',[legacy,'legacy@example.test'])
     await db.query("update public.profiles set plano='pro',nome='Legado' where id=$1",[legacy])
-    const migration=fs.readFileSync(new URL('../../supabase/migrations/20260916222754_secure_invite_signup.sql',import.meta.url),'utf8')
+    const migration=fs.readFileSync(new URL('../../supabase/migrations/20260916225659_secure_invite_signup.sql',import.meta.url),'utf8')
     await db.query('begin')
     try{await db.query(migration);await db.query('commit')}catch(e){await db.query('rollback');throw e}
 

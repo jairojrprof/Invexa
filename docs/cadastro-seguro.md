@@ -12,7 +12,7 @@ O trigger fica em `invexa_private`, sem acesso dos papéis do navegador, com `se
 
 ## Compatibilidade e implantação
 
-Migração: `supabase/migrations/20260916222754_secure_invite_signup.sql`, criada pelo comando oficial `supabase migration new`.
+Migração: `supabase/migrations/20260916225659_secure_invite_signup.sql`. Criada originalmente pelo comando oficial `supabase migration new`; após a aplicação pelo conector, o nome foi alinhado à versão registrada pelo Supabase para evitar reaplicação em futuros deploys.
 
 1. Conferir que a função/trigger e as quatro políticas antigas ainda correspondem à versão auditada. O SQL remove esses objetos pelos nomes conhecidos; falhas devem abortar a migração inteira.
 2. Publicar primeiro o frontend desta versão. Ele exige a RPC de compatibilidade `invexa_signup_ready()`; enquanto a migração não existir, o cadastro mostra indisponibilidade e não chama `signUp`. O login existente continua disponível.
@@ -39,7 +39,15 @@ O arquivo `tests/database/baseline.sql` reproduz as sete tabelas e políticas au
 
 Validação realizada em Node **22.23.2** e PostgreSQL **17.10**: **31 testes passaram**, incluindo uma disputa real entre duas conexões pelo mesmo convite, rollback, preservação de contas anteriores, bloqueio de dados administrativos e comportamento dos formulários. No ambiente Windows restrito foi necessário `--experimental-test-isolation=none` e `KEEP_TEST_DATABASE=1`, pois a remoção de um banco solicita um checkpoint que o ambiente não permitiu sinalizar. O banco preservado contém somente dados fictícios.
 
-Ainda não foram realizados cadastro/confirmação por email com o Auth hospedado nem revisão visual em navegador. A migração não foi aplicada ao Invexa ativo durante a preparação.
+## Implantação realizada em 16/09/2026
+
+O PR #1 foi incorporado em `main` no commit `56db93a0de53a6e5cf29cbc83ce7a6dc3e899ac5`. A Vercel confirmou a publicação em produção; em seguida, o Supabase aplicou a migração com a versão `20260916225659`.
+
+Verificação após implantação: site e módulos responderam HTTP 200; a RPC pública de compatibilidade retornou `true`; a consulta anônima a convites foi negada. As permissões efetivas confirmaram edição somente de nome pelo usuário, plano protegido e acesso administrativo preservado. O trigger privado e as políticas também foram conferidos. As telas de login e cadastro abriram normalmente no navegador.
+
+O verificador de segurança não apontou mais os problemas da função pública antiga. O aviso informativo de RLS sem política em `convites` é esperado: a tabela não deve ser acessível pelos clientes. Permanece o alerta de proteção contra senhas vazadas desativada, cuja configuração não foi alterada nesta implantação.
+
+Cadastro com convite válido, recebimento/confirmação de email e login autenticado ainda precisam de teste com uma conta destinada a isso. Não foram criadas contas nem consumidos convites reais durante estas verificações.
 
 ## Referências
 
