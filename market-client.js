@@ -23,13 +23,14 @@ export function createMarketClient(supabase, fetcher = globalThis.fetch) {
   return {
     async quote(tickers) {
       const list = [...new Set(String(tickers).split(',').map(t => t.trim().toUpperCase()).filter(Boolean))]
-      const results = []
+      const results = [], fetchedAt = []
       for (let i = 0; i < list.length; i += 10) {
         const data = await get('/api/quote', { tickers: list.slice(i, i + 10).join(',') })
         if (!Array.isArray(data?.results)) throw new Error('Cotações indisponíveis.')
         results.push(...data.results)
+        if(Number.isFinite(Date.parse(data.meta?.fetchedAt)))fetchedAt.push(Date.parse(data.meta.fetchedAt))
       }
-      return { results }
+      return { results, meta: fetchedAt.length ? { fetchedAt: new Date(Math.min(...fetchedAt)).toISOString() } : null }
     },
     async dividends(ticker) {
       const data = await get('/api/dividends', { ticker })

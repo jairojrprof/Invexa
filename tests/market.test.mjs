@@ -11,7 +11,7 @@ function request(kind='quote',value='PETR4',auth='Bearer user-token'){return {me
 function setup({kind='quote',auth=()=>json(account),quota=()=>json({allowed:true}),provider=url=>json(quote(new URL(url).pathname.split('/').at(-1))),cacheFail=false}={}){
   const calls=[],values=new Map();let time=100000
   const cache={get:async k=>{if(cacheFail)throw Error();return values.get(k)},set:async(k,v)=>{if(cacheFail)throw Error();values.set(k,v)}}
-  const handler=createMarketHandler(kind,{cache,now:()=>time,token:()=> 'provider-secret',fetcher:async(url,opts)=>{
+  const handler=createMarketHandler(kind,{cache,now:()=>time,sleep:async ms=>{time+=ms},token:()=> 'provider-secret',fetcher:async(url,opts)=>{
     calls.push({url,opts})
     if(url.includes('/auth/v1/user'))return auth(url,opts)
     if(url.includes('/rpc/'))return quota(url,opts)
@@ -60,7 +60,8 @@ test('cache por ativo reutiliza consulta, mas cada chamada verifica Auth e cota'
   assert.equal(s.calls.filter(c=>c.url.includes('/rpc/')).length,2)
   for(const c of s.calls.filter(c=>c.url.includes('brapi.dev'))){assert.equal(c.opts.headers.Authorization,'Bearer provider-secret');assert.ok(!c.url.includes('secret'))}
   assert.ok(!JSON.stringify(second.body).includes('secret'))
-  s.advance(60000);await s.run();assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,3)
+  s.advance(3590000);await s.run();assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,2)
+  s.advance(10000);await s.run();assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,3)
 })
 test('falha de cache mantém serviço autenticado e com quota',async()=>{
   const s=setup({cacheFail:true});assert.equal((await s.run()).statusCode,200);assert.equal(s.calls.length,3)
@@ -70,16 +71,16 @@ test('consultas simultâneas do mesmo ativo compartilham fetch sem compartilhar 
 })
 test('erros do provedor não viram sucesso nem entram no cache',async()=>{
   for(const [provider,status] of [[()=>json({error:'provider-secret'},401),502],[()=>json({},429),503],[()=>json({error:true}),502],[()=>json(quote('VALE3')),502],[()=>json({results:[{symbol:'PETR4',regularMarketPrice:null}]}),502],[()=>new Response('invalid json'),502],[()=>{throw new DOMException('timeout','TimeoutError')},504]]){
-    const s=setup({provider});const r=await s.run();assert.equal(r.statusCode,status);assert.equal(s.values.size,0);assert.ok(!JSON.stringify(r.body).includes('secret'))
+    const s=setup({provider});const r=await s.run();assert.equal(r.statusCode,status);assert.ok([...s.values.values()].every(value=>!value.payload));assert.ok(!JSON.stringify(r.body).includes('secret'))
   }
 })
-test('dividendos ausentes são erro; lista vazia explícita é válida e tem TTL de seis horas',async()=>{
-  const missing=setup({kind:'dividends'});assert.equal((await missing.run()).statusCode,502)
-  const s=setup({kind:'dividends',provider:()=>json({results:[{symbol:'PETR4',dividendsData:{cashDividends:[]}}]})})
-  const r=await s.run();assert.deepEqual(r.body.dividends,[]);assert.equal(r.body.meta.cacheTtlSeconds,21600)
-  s.advance(60000);await s.run();assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,1)
-  s.advance(21600000);await s.run();assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,2)
+test('dividendos desativados exigem sessão, sem consumir quota ou chamar BRAPI',async()=>{
+  const s=setup({kind:'dividends'})
+  const r=await s.run()
+  assert.equal(r.statusCode,403);assert.equal(r.body.code,'DIVIDENDS_UNAVAILABLE')
+  assert.equal(s.calls.length,1);assert.equal(s.values.size,0)
 })
+
 test('cliente envia token atualizado e divide carteira grande em lotes de dez',async()=>{
   let sessions=0;const calls=[]
   const sb={auth:{getSession:async()=>({data:{session:{access_token:'session-'+ ++sessions}}})}}
@@ -116,4 +117,49 @@ test('erros de autenticação e plano BRAPI são distintos do limite local',asyn
     const s=setup({provider:()=>json({error:'provider-secret'},status)});const r=await s.run()
     assert.equal(r.body.code,code);assert.equal(r.statusCode,502);assert.ok(!JSON.stringify(r.body).includes('secret'))
   }
+})
+
+test('bloqueio BRAPI pausa outros ativos e libera ao terminar Retry-After',async()=>{
+  let attempts=0
+  const s=setup({provider:url=>++attempts===1?json({},429,{'Retry-After':'300'}):json(quote(new URL(url).pathname.split('/').at(-1)))})
+  assert.equal((await s.run()).body.code,'PROVIDER_LIMITED')
+  const next=await s.run(request('quote','VALE3'))
+  assert.equal(next.body.code,'PROVIDER_LIMITED');assert.equal(attempts,1)
+  s.advance(300000)
+  assert.equal((await s.run(request('quote','VALE3'))).statusCode,200);assert.equal(attempts,2)
+})
+
+test('cache local evita repetição mesmo se cache regional falhar',async()=>{
+  const s=setup({cacheFail:true})
+  await s.run();await s.run()
+  assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,1)
+})
+
+test('requisições concorrentes de ativos diferentes mantêm intervalo e uma chamada ativa',async()=>{
+  let time=100000,active=0,maxActive=0
+  const starts=[]
+  const h=createMarketHandler('quote',{now:()=>time,sleep:async ms=>{time+=ms},token:()=> 'secret',fetcher:async url=>{
+    if(url.includes('/auth/'))return json(account)
+    if(url.includes('/rpc/'))return json({allowed:true})
+    active++;maxActive=Math.max(maxActive,active);starts.push(time)
+    await Promise.resolve();active--
+    return json(quote(new URL(url).pathname.split('/').at(-1)))
+  }})
+  const responses=[res(),res(),res()]
+  await Promise.all(['PETR4','VALE3','ITUB4'].map((t,i)=>h(request('quote',t),responses[i])))
+  assert.ok(responses.every(r=>r.statusCode===200));assert.equal(maxActive,1)
+  assert.ok(starts[1]-starts[0]>=1200);assert.ok(starts[2]-starts[1]>=1200)
+})
+
+test('pausa do provedor é compartilhada por instâncias através do cache',async()=>{
+  const values=new Map();let providerCalls=0
+  const options={cache:{get:async k=>values.get(k),set:async(k,v)=>values.set(k,v)},token:()=> 'secret',fetcher:async url=>{
+    if(url.includes('/auth/'))return json(account)
+    if(url.includes('/rpc/'))return json({allowed:true})
+    providerCalls++;return json({},429,{'Retry-After':'300'})
+  }}
+  const a=createMarketHandler('quote',options),b=createMarketHandler('quote',options)
+  const ra=res(),rb=res()
+  await a(request(),ra);await b(request('quote','VALE3'),rb)
+  assert.equal(ra.statusCode,503);assert.equal(rb.statusCode,503);assert.equal(providerCalls,1)
 })

@@ -1,23 +1,29 @@
-# Avisos de mercado e IA — 17/09/2026
+# Consultas de mercado no plano gratuito — 17/09/2026
 
-A recuperação da carteira da PR #3 foi aplicada e confirmada pelo usuário: 32 aportes preservados, dez posições ativas e nenhuma divergência contra os agregados do histórico. O novo aviso é independente da importação.
+## Problema e evidências
 
-## Evidências
+Após a correção da importação (PR #3), as posições reapareceram. A atualização de 18:34 UTC ainda recebeu HTTP 429 da BRAPI, identificado como PROVIDER_LIMITED. O contador interno marcava 30 unidades de cotação e 30 de dividendos no dia, abaixo dos limites locais. O usuário confirmou a chave BRAPI e reimplantou; o painel da BRAPI mostrava plano gratuito e 16/15.000 consultas no momento do print. O motivo específico do 429 do fornecedor não foi comprovado.
 
-- Contador Supabase: 20 ativos consultados para cotações e 20 para dividendos no dia, dez de cada no último minuto registrado. Abaixo dos limites do Invexa.
-- Logs da produção às 15:56 e 15:59 UTC: BRAPI retornou HTTP 429, convertido pela API em 503 `PROVIDER_LIMITED`; outros dividendos retornaram `PROVIDER_ERROR`, cujo status de origem não era distinguido.
-- O cliente trocava o motivo do bloqueio por “Limite de consultas atingido” nas tentativas seguintes. O aviso não permitia distinguir BRAPI de limite do usuário.
-- IA: `GEMINI_MODEL_NOT_FOUND`, resposta 404 do Gemini. Não há evidência suficiente para dizer qual valor de `GEMINI_MODEL` foi usado em produção ou se o problema é um nome inválido ou indisponibilidade para a conta. O frontend ocultava o diagnóstico com uma mensagem genérica de conexão.
-- Inicialização chamava showApp após getSession e outra vez em INITIAL_SESSION. Eventos SIGNED_IN e TOKEN_REFRESHED também disparavam novas consultas e análise de IA.
+A página disparava consultas de cotações e dividendos em paralelo, e eventos repetidos de sessão podiam recarregar a carteira. A BRAPI não inclui dividendos no plano gratuito.
 
-## Ajustes preparados
+## Comportamento final
 
-O cliente preserva a mensagem e o código de erro durante a espera. O servidor respeita Retry-After da BRAPI e distingue autenticação (401), autorização/plano (403) e limite (429), sem expor resposta bruta ou credenciais. Consultas por ativo são sequenciais, com interrupção no primeiro bloqueio e orçamento de tempo para o lote. Dividendos param ao detectar bloqueio do serviço. Cotações são solicitadas antes dos dividendos.
+- A página não solicita mais dividendos à BRAPI. O endpoint legado exige sessão e retorna 403 DIVIDENDS_UNAVAILABLE sem consumir cota nem consultar o fornecedor.
+- Campos de proventos recebidos e estimativas exibem indisponibilidade, não zero. Nenhum dado persistido foi removido ou alterado. A importação de proventos não faz parte desta entrega.
+- Cache de preços por ativo aumentado de 60 segundos para uma hora, com cópia limitada a 512 ativos em memória para tolerar falha do cache regional.
+- Consultas externas sequenciais, separadas por no mínimo 1,2 segundo por instância. Chamadas simultâneas para o mesmo ativo compartilham a busca.
+- HTTP 429 interrompe o lote e gera pausa conforme Retry-After; se ausente/inválido, cinco minutos. A pausa é compartilhada pelo cache regional quando disponível e mantida localmente. Não há retentativa automática.
+- O cliente preserva o motivo da BRAPI durante a pausa. Autenticação (401), autorização/plano (403) e limite (429) têm mensagens distintas.
+- Sessão inicial e notificações repetidas da mesma conta não repetem o carregamento. Atualizações concorrentes na página compartilham a busca.
+- A interface informa quando os preços foram consultados (não o horário da negociação) e a reutilização por até uma hora.
+- Auth e cotas internas continuam obrigatórias mesmo quando a cotação está em cache. Nenhuma chave é exposta ao cliente.
 
-O controle de sessão carrega a conta uma única vez por entrada, ignora notificações repetidas da mesma identidade e agenda consultas fora do callback de Auth. A mensagem específica da IA é exibida como texto.
+## Validação e limites
 
-41 testes de aplicação aprovados em Node 22. Incluem sessão inicial duplicada, renovação, troca de conta ainda na fila, cooldown com origem preservada, parada do lote após 429, Retry-After, 401/403 e mensagem da IA. Não há alteração de banco nesta rodada.
+46 testes de aplicação passaram em Node 22.23.2 e Node 24.19.0. Cobrem autenticação, cotas, cache, intervalo entre ativos concorrentes, bloqueio compartilhado, desativação de dividendos, metadados na interface e ausência de zeros fictícios. Sem alteração de banco.
 
-Esses ajustes não aumentam cotas nem garantem liberação do fornecedor. Pendências externas: conferir plano/consumo/renovação da conta BRAPI e o nome do modelo configurado na Vercel. Não substituir modelos automaticamente nem contornar bloqueios com novas chaves. O acesso de navegador às configurações falhou por timeout e o conector de projeto não expõe as variáveis nesta sessão.
+O cache é regional e descartável. O espaçamento é por instância, não uma fila global distribuída; muitas instâncias ainda podem coincidir. Esta mudança reduz consumo e rajadas, mas não garante liberação de um bloqueio já aplicado pela BRAPI ou franquia mensal ilimitada. O teste autenticado de produção requer uma atualização na conta após a publicação.
 
-Referências: [BRAPI — limites e autenticação](https://brapi.dev/docs/authentication), [BRAPI — limites por plano](https://brapi.dev/faq/quais-as-limitacoes), [Gemini — modelos](https://ai.google.dev/gemini-api/docs/models).
+A falha independente da IA permanece: GEMINI_MODEL_NOT_FOUND / HTTP 404. O usuário informou GEMINI_MODEL=gemini-2.5-flash; esta entrega não troca o modelo nem altera credenciais. A mensagem específica agora fica visível como texto.
+
+Referências: [BRAPI — plano gratuito](https://brapi.dev/faq/o-plano-gratuito-tem-limitacoes-importantes), [BRAPI — autenticação](https://brapi.dev/docs/authentication).

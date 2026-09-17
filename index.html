@@ -24,12 +24,11 @@ const aiClient = createAIClient(sb)
 const marketClient = createMarketClient(sb)
 const API={
   quote:(t)=>marketClient.quote(t),
-  dividends:(t)=>marketClient.dividends(t),
   ai:(c,p)=>aiClient.ai(c,p),
   assistant:(m,h,c,p)=>aiClient.assistant(m,h,c,p)
 }
 let user=null,carteira=[],aportes=[],precos={},dividendosHist={},charts={},importPreview=[],chatHistorico=[],perfil=null
-let marketErrors={quote:'',dividends:''},marketUserId=null
+let marketErrors={quote:'',dividends:''},marketUserId=null,quotesPending=null,quotesAccount=null
 function showMarketStatus(){
   const node=el('marketStatus')
   if(!node)return
@@ -86,53 +85,46 @@ window.logout=async function(){await sb.auth.signOut()}
 
 // ── APP ────────────────────────────────────────────────
 async function showApp(){
-  if(marketUserId!==user.id){precos={};dividendosHist={};marketErrors={quote:'',dividends:''};marketUserId=user.id;showMarketStatus()}
+  if(marketUserId!==user.id){precos={};dividendosHist={};marketErrors={quote:'',dividends:''};marketUserId=user.id;if(el('quoteInfo'))el('quoteInfo').textContent='Cotações reutilizadas por até 1 hora; preços sujeitos a atraso.';showMarketStatus()}
   el('authScreen').style.display='none';el('appScreen').style.display='block'
   const emailEl=el('contaEmail');if(emailEl)emailEl.textContent=user.email
   await Promise.all([loadCarteira(),loadAportes(),loadPerfil(),loadChatHistorico()])
-  await loadQuotes();await calcularDividendosAcumulados()
-  renderAll();renderChat();loadAI()
+  renderAll();renderChat()
+  await loadQuotes()
+  renderAll();loadAI()
 }
 async function loadCarteira(){const{data}=await sb.from('carteira').select('*').eq('user_id',user.id).eq('ativo',true);carteira=data||[]}
 async function loadAportes(){const{data}=await sb.from('aportes').select('*').eq('user_id',user.id).order('data',{ascending:true});aportes=data||[]}
 async function loadPerfil(){const{data}=await sb.from('perfil_investidor').select('*').eq('user_id',user.id).single();perfil=data||null;renderPerfil()}
 async function loadChatHistorico(){const{data}=await sb.from('chat_historico').select('*').eq('user_id',user.id).order('criado_em',{ascending:false}).limit(50);chatHistorico=(data||[]).reverse()}
 async function loadQuotes(){
-  marketErrors.quote=''
-  if(!carteira.length){showMarketStatus();return}
-  try{const data=await API.quote(carteira.map(a=>a.ticker).join(','));data.results.forEach(r=>{precos[r.symbol]={preco:r.regularMarketPrice,var:r.regularMarketChangePercent}})}
-  catch(e){marketErrors.quote='Cotações não atualizadas: '+e.message}
-  showMarketStatus()
-}
-async function calcularDividendosAcumulados(){
-  marketErrors.dividends=''
-  if(!carteira.length||!aportes.length){showMarketStatus();return}
-  const tickers=[...new Set(carteira.map(a=>a.ticker))]
-  for(const ticker of tickers){
-    try{
-      const data=await API.dividends(ticker)
-      const divs=data.dividends||[]
-      const at=aportes.filter(a=>a.ticker===ticker).sort((a,b)=>new Date(a.data)-new Date(b.data))
-      if(!at.length||!divs.length){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0};continue}
-      let total=0;const historico=[]
-      divs.forEach(div=>{
-        const dc=new Date(div.paymentDate||div.lastDatePrior||div.exDividendDate)
-        if(isNaN(dc))return
-        const cotas=at.filter(a=>new Date(a.data)<=dc).reduce((s,a)=>s+a.cotas,0)
-        if(cotas>0&&div.rate>0){const rec=cotas*div.rate;total+=rec;historico.push({data:dc.toLocaleDateString('pt-BR'),cotas,valorPorCota:div.rate,recebido:rec})}
-      })
-      const p=precos[ticker]?.preco||at[0]?.preco||1
-      const soma12=divs.slice(0,12).reduce((s,d)=>s+(d.rate||0),0)
-      dividendosHist[ticker]={total,historico:historico.reverse(),divMes:divs[0]?.rate||0,dy12m:p>0?(soma12/p*100):0}
-    }catch(e){marketErrors.dividends='Dividendos não atualizados: '+e.message;if(['PROVIDER_LIMITED','RATE_LIMITED','PROVIDER_AUTH_ERROR','PROVIDER_PLAN_RESTRICTED'].includes(e.code))break}
+  const accountId=user?.id
+  if(quotesPending){
+    if(quotesAccount===accountId)return quotesPending
+    await quotesPending
+    if(user?.id!==accountId)return
+    return loadQuotes()
   }
-  showMarketStatus()
+  quotesAccount=accountId
+  quotesPending=(async()=>{
+    marketErrors.quote=''
+    if(!carteira.length){showMarketStatus();return}
+    try{
+      const data=await API.quote(carteira.map(a=>a.ticker).join(','))
+      if(user?.id!==accountId)return
+      data.results.forEach(r=>{precos[r.symbol]={preco:r.regularMarketPrice,var:r.regularMarketChangePercent}})
+      const info=el('quoteInfo')
+      if(info&&data.meta?.fetchedAt)info.textContent='Cotações consultadas em '+new Date(data.meta.fetchedAt).toLocaleString('pt-BR')+'. Reutilizadas por até 1 hora; preços sujeitos a atraso.'
+    }catch(e){if(user?.id===accountId)marketErrors.quote='Cotações não atualizadas: '+e.message}
+    if(user?.id===accountId)showMarketStatus()
+  })()
+  try{await quotesPending}finally{quotesPending=null}
 }
 window.refreshQuotes=async function(){
   if(el('refreshBtn').disabled)return
   el('refreshBtn').disabled=true
   el('refreshBtn').textContent='⟳ buscando...'
-  try{await loadQuotes();await calcularDividendosAcumulados();renderAll()}
+  try{await loadQuotes();renderAll()}
   finally{el('refreshBtn').textContent='⟳ atualizar';el('refreshBtn').disabled=false}
 }
 
@@ -143,28 +135,23 @@ const el=id=>document.getElementById(id)
 const val=id=>el(id)?.value||''
 function set(id,html){const e=el(id);if(e)e.innerHTML=html}
 function tipoByTicker(t){return t.endsWith('11')?'FII':t.length<=5?'Ação':'FII'}
-function carteiraSummary(){return carteira.map(a=>{const p=precos[a.ticker]?.preco||a.preco_medio;const r=((p-a.preco_medio)/a.preco_medio*100).toFixed(1);const acum=dividendosHist[a.ticker]?.total||0;const dm=dividendosHist[a.ticker]?.divMes||0;return `${a.ticker}(${a.cotas}c, PM R$${a.preco_medio}, hoje R$${p.toFixed(2)}, ${r}%, div mensal R$${dm.toFixed(4)}/c, acumulado R$${acum.toFixed(2)})`}).join('; ')}
+function carteiraSummary(){return carteira.map(a=>{const p=precos[a.ticker]?.preco||a.preco_medio;return `${a.ticker}(${a.cotas}c, PM R$${a.preco_medio}, preço de referência R$${p.toFixed(2)}, dados de dividendos indisponíveis)`}).join('; ')}
 
 // ── RENDER ALL ─────────────────────────────────────────
 function renderAll(){renderKPIs();renderAtivos();renderProventos();renderAportesList();renderCharts()}
 
 function renderKPIs(){
-  let patrimonio=0,custo=0,divMes=0,divAcum=0
-  carteira.forEach(a=>{const p=precos[a.ticker]?.preco||a.preco_medio;patrimonio+=p*a.cotas;custo+=a.preco_medio*a.cotas;divMes+=(dividendosHist[a.ticker]?.divMes||0)*a.cotas;divAcum+=dividendosHist[a.ticker]?.total||0})
+  let patrimonio=0,custo=0
+  carteira.forEach(a=>{const p=precos[a.ticker]?.preco||a.preco_medio;patrimonio+=p*a.cotas;custo+=a.preco_medio*a.cotas})
   const result=patrimonio-custo
-  const dyMedio=carteira.length?carteira.reduce((s,a)=>s+(dividendosHist[a.ticker]?.dy12m||0),0)/carteira.length:0
   set('kpiPatrimonio',fmt(patrimonio))
   const rEl=el('kpiResult');if(rEl){rEl.textContent=fmt(result);rEl.className='kpi-val '+(result>=0?'green':'red')}
   const rpEl=el('kpiResultPct');if(rpEl){rpEl.textContent=fmtP((result/(custo||1))*100);rpEl.className='kpi-sub '+(result>=0?'green':'red')}
-  set('kpiDiv',fmt(divMes));set('kpiDY',dyMedio.toFixed(1)+'%')
-  set('kpiAcumulado',fmt(divAcum))
-  const retReal=custo>0?((result+divAcum)/custo*100):0
-  set('kpiRetornoReal',fmtP(retReal))
-  const rr=el('kpiRetornoReal');if(rr)rr.className='kpi-sub '+(retReal>=0?'green':'red')
-  const pct=Math.min((divMes/1518)*100,100)
-  set('metaAtual',fmt(divMes)+'/mês')
-  const pf=el('progressFill');if(pf)pf.style.width=pct+'%'
-  set('metaPct',pct.toFixed(1)+'% do salário mínimo')
+  set('kpiDiv','—');set('kpiDY','estimativa indisponível')
+  set('kpiAcumulado','—');set('kpiRetornoReal','dados indisponíveis')
+  set('metaAtual','—');set('metaPct','Aguardando dados de proventos')
+  const pf=el('progressFill');if(pf)pf.style.width='0%'
+
 }
 
 function renderAtivos(){
@@ -185,32 +172,18 @@ function renderAtivos(){
       ${acum>0?`<div class="asset-row"><span>retorno real total</span><span class="${retReal>=0?'green':'red'} asset-val">${fmtP(retReal)}</span></div>`:''}
       ${dm>0?`<div class="asset-row"><span>div. mensal estimado</span><span class="green asset-val">${fmt(dm*a.cotas)}</span></div>`:''}
       <div style="display:flex;gap:8px;margin-top:8px">
-        <button class="btn-mini" onclick="verHistoricoDividendos('${a.ticker}')">histórico div.</button>
         <button class="btn-mini btn-mini-red" onclick="removerAtivo('${a.id}')">remover</button>
       </div>
     </div>`
   })
 }
 
-window.verHistoricoDividendos=function(ticker){
-  const hist=dividendosHist[ticker]
-  if(!hist||!hist.historico.length){alert(`Nenhum dividendo calculado para ${ticker}. Verifique se os aportes têm datas anteriores aos pagamentos.`);return}
-  set('modalTicker',ticker)
-  const rows=hist.historico.map(h=>`<div class="prov-row"><span>${h.data}</span><span class="muted">${h.cotas}c × ${fmt(h.valorPorCota)}</span><span class="green fw">${fmt(h.recebido)}</span></div>`).join('')
-  set('modalBody',`${rows}<div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:13px;font-weight:500"><span>total recebido</span><span class="green">${fmt(hist.total)}</span></div>`)
-  el('modalDiv').style.display='flex'
-}
 window.fecharModal=function(){el('modalDiv').style.display='none'}
 
 function renderProventos(){
-  const l=el('proventosLista');if(!l)return;l.innerHTML=''
-  let totalMes=0,totalAcum=0
-  carteira.sort((a,b)=>{const da=dividendosHist[a.ticker]?.divMes||0,db=dividendosHist[b.ticker]?.divMes||0;return db*b.cotas-da*a.cotas}).forEach(a=>{
-    const dm=dividendosHist[a.ticker]?.divMes||0,acum=dividendosHist[a.ticker]?.total||0
-    const vm=dm*a.cotas;totalMes+=vm;totalAcum+=acum
-    l.innerHTML+=`<div class="prov-row"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}×${fmt(dm)}</span><span class="green fw">${fmt(vm)}/mês</span>${acum>0?`<span class="green" style="font-size:10px">${fmt(acum)} acum.</span>`:''}</div>`
-  })
-  set('totalProvMensal',fmt(totalMes));set('totalProvAcumulado',fmt(totalAcum))
+  const l=el('proventosLista');if(!l)return
+  l.textContent='Dados de proventos indisponíveis nesta versão. Os aportes importados estão preservados. A ausência de dados não significa que você não recebeu rendimentos.'
+  set('totalProvMensal','—');set('totalProvAcumulado','—')
 }
 
 function renderAportesList(){
@@ -321,7 +294,7 @@ async function refreshPortfolio(){
   if(positions.error||history.error)throw Error('Operação salva. Recarregue a página para atualizar a carteira; não importe novamente.')
   carteira=positions.data||[];aportes=history.data||[]
   renderAll()
-  await loadQuotes();await calcularDividendosAcumulados();renderAll()
+  await loadQuotes();renderAll()
 }
 window.registrarAporte=async function(){
   if(portfolioBusy)return
@@ -590,6 +563,7 @@ a{color:var(--accent);text-decoration:none}
     </div>
   </div>
   <div id="marketStatus" role="status" hidden style="padding:12px 20px;color:var(--warn);font-size:13px"></div>
+    <p id="quoteInfo" class="small muted" style="margin:8px 20px;line-height:1.5" aria-live="polite">Cotações reutilizadas por até 1 hora; preços sujeitos a atraso.</p>
   <div class="tabs">
     <button class="tab active" data-tab="painel" onclick="switchTab('painel',this)">painel</button>
     <button class="tab" data-tab="ativos" onclick="switchTab('ativos',this)">ativos</button>
