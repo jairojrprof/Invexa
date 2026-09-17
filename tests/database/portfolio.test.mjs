@@ -7,7 +7,7 @@ const url=new URL(process.env.LOCAL_TEST_DATABASE_URL||'http://invalid')
 if(!['localhost','127.0.0.1','[::1]'].includes(url.hostname))throw Error('Use banco local descartável')
 const name=`invexa_portfolio_${process.pid}_${Date.now()}`,local=new URL(url);local.pathname='/'+name
 const admin=new pg.Client({connectionString:url.href})
-const sql=fs.readFileSync(new URL('../../supabase/migrations/20260917154038_atomic_portfolio_import.sql',import.meta.url),'utf8')
+const sql=fs.readFileSync(new URL('../../supabase/migrations/20260917155311_atomic_portfolio_import.sql',import.meta.url),'utf8')
 const row=(ticker='PETR4',cotas=2,preco=10)=>({ticker,cotas,preco,data:'2026-01-10'})
 async function connect(){const c=new pg.Client({connectionString:local.href});await c.connect();return c}
 async function mutate(c,user,action,entries=[],id=null,request=randomUUID(),role='authenticated'){

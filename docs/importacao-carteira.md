@@ -19,3 +19,7 @@ A migração recupera somente posições ausentes ou inativas que tenham compras
 Suíte ampliada com PostgreSQL 17 real: conflito após reset, recuperação sem duplicar histórico, reimportação, preço médio ponderado, rollback de lote por falha na carteira, idempotência, concorrência, isolamento entre contas, validação de entradas, exclusão do último aporte e reset. Testes de interface verificam erros retornados, preservação da prévia, texto seguro e bloqueio de duplo envio.
 
 Aplicar a migração antes de publicar o cliente; verificar RLS, privilégios e comparação das posições recuperadas com a soma dos aportes. Após publicar, recarregar o aplicativo. Não é necessário importar novamente o extrato já recebido.
+
+## Aplicação no banco — 17/09/2026
+
+Migração 20260917155311 aplicada com autorização do usuário. Verificação: 32 aportes preservados, dez ativos recuperados, nenhuma posição divergente da soma das quantidades e do preço médio ponderado. RLS e permissões conferidos: anônimo não executa a operação e clientes não leem nem alteram o registro privado de pedidos. A conferência visual da conta conectada permanece pendente.
