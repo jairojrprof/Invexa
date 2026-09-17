@@ -16,6 +16,7 @@ import { appendChatMessage } from './chat-ui.js'
 import { createSignupClient } from './signup-client.js'
 import { createMarketClient } from './market-client.js'
 import { createPortfolioClient } from './portfolio-client.js'
+import { startAuthLifecycle } from './auth-lifecycle.js'
 const mutatePortfolio = createPortfolioClient(sb)
 let portfolioBusy=false
 const signupClient = createSignupClient(sb)
@@ -38,10 +39,12 @@ function showMarketStatus(){
 }
 
 // ── INIT ───────────────────────────────────────────────
-async function init(){
-  const{data:{session}}=await sb.auth.getSession()
-  if(session){user=session.user;await showApp()}else showAuth('login')
-  sb.auth.onAuthStateChange(async(_e,s)=>{if(s){user=s.user;await showApp()}else showAuth('login')})
+function init(){
+  startAuthLifecycle(sb,{
+    onSession:async session=>{user=session.user;await showApp()},
+    onSignedOut:()=>{user=null;marketUserId=null;showAuth('login')},
+    onError:()=>{el('authError').textContent='Não foi possível carregar a sessão. Recarregue a página.'}
+  })
 }
 
 // ── AUTH ───────────────────────────────────────────────
@@ -87,7 +90,7 @@ async function showApp(){
   el('authScreen').style.display='none';el('appScreen').style.display='block'
   const emailEl=el('contaEmail');if(emailEl)emailEl.textContent=user.email
   await Promise.all([loadCarteira(),loadAportes(),loadPerfil(),loadChatHistorico()])
-  await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
+  await loadQuotes();await calcularDividendosAcumulados()
   renderAll();renderChat();loadAI()
 }
 async function loadCarteira(){const{data}=await sb.from('carteira').select('*').eq('user_id',user.id).eq('ativo',true);carteira=data||[]}
@@ -105,12 +108,12 @@ async function calcularDividendosAcumulados(){
   marketErrors.dividends=''
   if(!carteira.length||!aportes.length){showMarketStatus();return}
   const tickers=[...new Set(carteira.map(a=>a.ticker))]
-  await Promise.all(tickers.map(async ticker=>{
+  for(const ticker of tickers){
     try{
       const data=await API.dividends(ticker)
       const divs=data.dividends||[]
       const at=aportes.filter(a=>a.ticker===ticker).sort((a,b)=>new Date(a.data)-new Date(b.data))
-      if(!at.length||!divs.length){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0};return}
+      if(!at.length||!divs.length){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0};continue}
       let total=0;const historico=[]
       divs.forEach(div=>{
         const dc=new Date(div.paymentDate||div.lastDatePrior||div.exDividendDate)
@@ -121,15 +124,15 @@ async function calcularDividendosAcumulados(){
       const p=precos[ticker]?.preco||at[0]?.preco||1
       const soma12=divs.slice(0,12).reduce((s,d)=>s+(d.rate||0),0)
       dividendosHist[ticker]={total,historico:historico.reverse(),divMes:divs[0]?.rate||0,dy12m:p>0?(soma12/p*100):0}
-    }catch(e){marketErrors.dividends='Dividendos não atualizados: '+e.message}
-  }))
+    }catch(e){marketErrors.dividends='Dividendos não atualizados: '+e.message;if(['PROVIDER_LIMITED','RATE_LIMITED','PROVIDER_AUTH_ERROR','PROVIDER_PLAN_RESTRICTED'].includes(e.code))break}
+  }
   showMarketStatus()
 }
 window.refreshQuotes=async function(){
   if(el('refreshBtn').disabled)return
   el('refreshBtn').disabled=true
   el('refreshBtn').textContent='⟳ buscando...'
-  try{await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()}
+  try{await loadQuotes();await calcularDividendosAcumulados();renderAll()}
   finally{el('refreshBtn').textContent='⟳ atualizar';el('refreshBtn').disabled=false}
 }
 
@@ -318,7 +321,7 @@ async function refreshPortfolio(){
   if(positions.error||history.error)throw Error('Operação salva. Recarregue a página para atualizar a carteira; não importe novamente.')
   carteira=positions.data||[];aportes=history.data||[]
   renderAll()
-  await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()
+  await loadQuotes();await calcularDividendosAcumulados();renderAll()
 }
 window.registrarAporte=async function(){
   if(portfolioBusy)return
@@ -444,7 +447,7 @@ window.loadAI=async function(){
     const data=await API.ai(carteiraSummary(),perfil)
     if(data.error){aiEl.textContent='⚠ '+data.error;return}
     aiEl.textContent=data.analysis||'Análise indisponível no momento.'
-  }catch(e){aiEl.textContent='⚠ Não foi possível conectar ao assistente. Tente atualizar.'}
+  }catch(e){aiEl.textContent='⚠ '+(e.message||'Não foi possível conectar ao assistente. Tente atualizar.')}
 }
 
 // ── TABS ───────────────────────────────────────────────

@@ -96,5 +96,24 @@ test('cliente rejeita sessão ausente e respeita Retry-After',async()=>{
   await assert.rejects(bad.dividends('PETR4'));assert.equal(calls,0)
   const c=createMarketClient({auth:{getSession:async()=>({data:{session:{access_token:'x'}}})}},async()=>{calls++;return json({error:'Aguarde'},429,{'Retry-After':'60'})})
   await assert.rejects(c.dividends('PETR4'),/Aguarde/)
-  await assert.rejects(c.quote('VALE3'),/Limite/);assert.equal(calls,1)
+  await assert.rejects(c.quote('VALE3'),/Aguarde/);assert.equal(calls,1)
+})
+
+test('cliente preserva origem BRAPI durante espera, sem culpar a cota do usuário',async()=>{
+  let calls=0
+  const c=createMarketClient({auth:{getSession:async()=>({data:{session:{access_token:'x'}}})}},async()=>{calls++;return json({error:'A BRAPI limitou o serviço.',code:'PROVIDER_LIMITED'},503,{'Retry-After':'300'})})
+  for(let i=0;i<2;i++)await assert.rejects(c.quote('PETR4'),e=>e.code==='PROVIDER_LIMITED'&&e.message==='A BRAPI limitou o serviço.')
+  assert.equal(calls,1)
+})
+test('lote para no primeiro bloqueio BRAPI e respeita Retry-After sem expor credenciais',async()=>{
+  const s=setup({provider:()=>json({},429,{'Retry-After':'1800'})})
+  const r=await s.run(request('quote','PETR4,VALE3,ITUB4'))
+  assert.equal(r.statusCode,503);assert.equal(r.body.code,'PROVIDER_LIMITED');assert.equal(r.headers['Retry-After'],'1800')
+  assert.equal(s.calls.filter(c=>c.url.includes('brapi.dev')).length,1)
+})
+test('erros de autenticação e plano BRAPI são distintos do limite local',async()=>{
+  for(const [status,code] of [[401,'PROVIDER_AUTH_ERROR'],[403,'PROVIDER_PLAN_RESTRICTED']]){
+    const s=setup({provider:()=>json({error:'provider-secret'},status)});const r=await s.run()
+    assert.equal(r.body.code,code);assert.equal(r.statusCode,502);assert.ok(!JSON.stringify(r.body).includes('secret'))
+  }
 })
