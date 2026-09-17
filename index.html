@@ -14,15 +14,25 @@ const sb=createClient(SUPABASE_URL,SUPABASE_KEY)
 import { createAIClient } from './ai-client.js'
 import { appendChatMessage } from './chat-ui.js'
 import { createSignupClient } from './signup-client.js'
+import { createMarketClient } from './market-client.js'
 const signupClient = createSignupClient(sb)
 const aiClient = createAIClient(sb)
+const marketClient = createMarketClient(sb)
 const API={
-  quote:(t)=>fetch(`/api/quote?tickers=${t}`).then(r=>r.json()),
-  dividends:(t)=>fetch(`/api/dividends?ticker=${t}`).then(r=>r.json()),
+  quote:(t)=>marketClient.quote(t),
+  dividends:(t)=>marketClient.dividends(t),
   ai:(c,p)=>aiClient.ai(c,p),
   assistant:(m,h,c,p)=>aiClient.assistant(m,h,c,p)
 }
 let user=null,carteira=[],aportes=[],precos={},dividendosHist={},charts={},importPreview=[],chatHistorico=[],perfil=null
+let marketErrors={quote:'',dividends:''},marketUserId=null
+function showMarketStatus(){
+  const node=el('marketStatus')
+  if(!node)return
+  const messages=Object.values(marketErrors).filter(Boolean)
+  node.textContent=messages.length ? messages.join(' ')+' Os totais podem estar incompletos ou usar dados anteriores e preços de compra.' : ''
+  node.hidden=!messages.length
+}
 
 // ── INIT ───────────────────────────────────────────────
 async function init(){
@@ -70,6 +80,7 @@ window.logout=async function(){await sb.auth.signOut()}
 
 // ── APP ────────────────────────────────────────────────
 async function showApp(){
+  if(marketUserId!==user.id){precos={};dividendosHist={};marketErrors={quote:'',dividends:''};marketUserId=user.id;showMarketStatus()}
   el('authScreen').style.display='none';el('appScreen').style.display='block'
   const emailEl=el('contaEmail');if(emailEl)emailEl.textContent=user.email
   await Promise.all([loadCarteira(),loadAportes(),loadPerfil(),loadChatHistorico()])
@@ -81,11 +92,15 @@ async function loadAportes(){const{data}=await sb.from('aportes').select('*').eq
 async function loadPerfil(){const{data}=await sb.from('perfil_investidor').select('*').eq('user_id',user.id).single();perfil=data||null;renderPerfil()}
 async function loadChatHistorico(){const{data}=await sb.from('chat_historico').select('*').eq('user_id',user.id).order('criado_em',{ascending:false}).limit(50);chatHistorico=(data||[]).reverse()}
 async function loadQuotes(){
-  if(!carteira.length)return
-  try{const data=await API.quote(carteira.map(a=>a.ticker).join(','));if(data.results)data.results.forEach(r=>{precos[r.symbol]={preco:r.regularMarketPrice,var:r.regularMarketChangePercent}})}catch(e){}
+  marketErrors.quote=''
+  if(!carteira.length){showMarketStatus();return}
+  try{const data=await API.quote(carteira.map(a=>a.ticker).join(','));data.results.forEach(r=>{precos[r.symbol]={preco:r.regularMarketPrice,var:r.regularMarketChangePercent}})}
+  catch(e){marketErrors.quote='Cotações não atualizadas: '+e.message}
+  showMarketStatus()
 }
 async function calcularDividendosAcumulados(){
-  if(!carteira.length||!aportes.length)return
+  marketErrors.dividends=''
+  if(!carteira.length||!aportes.length){showMarketStatus();return}
   const tickers=[...new Set(carteira.map(a=>a.ticker))]
   await Promise.all(tickers.map(async ticker=>{
     try{
@@ -103,13 +118,16 @@ async function calcularDividendosAcumulados(){
       const p=precos[ticker]?.preco||at[0]?.preco||1
       const soma12=divs.slice(0,12).reduce((s,d)=>s+(d.rate||0),0)
       dividendosHist[ticker]={total,historico:historico.reverse(),divMes:divs[0]?.rate||0,dy12m:p>0?(soma12/p*100):0}
-    }catch(e){dividendosHist[ticker]={total:0,historico:[],divMes:0,dy12m:0}}
+    }catch(e){marketErrors.dividends='Dividendos não atualizados: '+e.message}
   }))
+  showMarketStatus()
 }
 window.refreshQuotes=async function(){
+  if(el('refreshBtn').disabled)return
+  el('refreshBtn').disabled=true
   el('refreshBtn').textContent='⟳ buscando...'
-  await Promise.all([loadQuotes(),calcularDividendosAcumulados()])
-  renderAll();el('refreshBtn').textContent='⟳ atualizar'
+  try{await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()}
+  finally{el('refreshBtn').textContent='⟳ atualizar';el('refreshBtn').disabled=false}
 }
 
 // ── HELPERS ────────────────────────────────────────────
@@ -560,12 +578,13 @@ a{color:var(--accent);text-decoration:none}
 <!-- APP -->
 <div id="appScreen">
   <div class="app-header">
-    <div class="app-logo">Inve<span>xa ● ao vivo</span></div>
+    <div class="app-logo">Inve<span>xa</span></div>
     <div class="header-btns">
       <button class="refresh-btn" id="refreshBtn" onclick="refreshQuotes()">⟳ atualizar</button>
       <button class="logout-btn" onclick="logout()">sair</button>
     </div>
   </div>
+  <div id="marketStatus" role="status" hidden style="padding:12px 20px;color:var(--warn);font-size:13px"></div>
   <div class="tabs">
     <button class="tab active" data-tab="painel" onclick="switchTab('painel',this)">painel</button>
     <button class="tab" data-tab="ativos" onclick="switchTab('ativos',this)">ativos</button>
