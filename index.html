@@ -15,6 +15,9 @@ import { createAIClient } from './ai-client.js'
 import { appendChatMessage } from './chat-ui.js'
 import { createSignupClient } from './signup-client.js'
 import { createMarketClient } from './market-client.js'
+import { createPortfolioClient } from './portfolio-client.js'
+const mutatePortfolio = createPortfolioClient(sb)
+let portfolioBusy=false
 const signupClient = createSignupClient(sb)
 const aiClient = createAIClient(sb)
 const marketClient = createMarketClient(sb)
@@ -307,54 +310,48 @@ window.limparChat=async function(){
 window.chatEnterKey=function(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();enviarMensagem()}}
 
 // ── APORTE ─────────────────────────────────────────────
+async function refreshPortfolio(){
+  const [positions,history]=await Promise.all([
+    sb.from('carteira').select('*').eq('user_id',user.id).eq('ativo',true),
+    sb.from('aportes').select('*').eq('user_id',user.id).order('data',{ascending:true})
+  ])
+  if(positions.error||history.error)throw Error('Operação salva. Recarregue a página para atualizar a carteira; não importe novamente.')
+  carteira=positions.data||[];aportes=history.data||[]
+  renderAll()
+  await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()
+}
 window.registrarAporte=async function(){
+  if(portfolioBusy)return
   const ticker=val('apTicker').trim().toUpperCase(),data=val('apData')
-  const cotas=parseFloat(val('apCotas')),preco=parseFloat(val('apPreco'))
-  const errEl=el('apError')
-  if(!ticker||!data||!cotas||!preco){errEl.textContent='preencha todos os campos.';return}
-  if(new Date(data)>new Date()){errEl.textContent='a data não pode ser no futuro.';return}
-  errEl.textContent=''
-  const btn=el('btnAporte');btn.textContent='registrando...';btn.disabled=true
-  const{error:apErr}=await sb.from('aportes').insert({user_id:user.id,ticker,cotas,preco,data})
-  if(apErr){errEl.textContent=apErr.message;btn.textContent='registrar aporte';btn.disabled=false;return}
-  const exist=carteira.find(a=>a.ticker===ticker)
-  if(exist){
-    const nc=exist.cotas+cotas,npm=((exist.preco_medio*exist.cotas)+(preco*cotas))/nc
-    await sb.from('carteira').update({cotas:nc,preco_medio:+npm.toFixed(4),atualizado_em:new Date().toISOString()}).eq('id',exist.id)
-  }else{
-    await sb.from('carteira').insert({user_id:user.id,ticker,cotas,preco_medio:preco,tipo:tipoByTicker(ticker),ativo:true})
-  }
-  ;['apTicker','apData','apCotas','apPreco'].forEach(id=>{el(id).value=''})
-  errEl.style.color='var(--green)';errEl.textContent='✓ aporte registrado!'
-  btn.textContent='registrar aporte';btn.disabled=false
-  await loadCarteira();await loadAportes();await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()
-  setTimeout(()=>{errEl.textContent='';errEl.style.color='var(--red)'},3000)
+  const cotas=Number(val('apCotas')),preco=Number(val('apPreco')),errEl=el('apError'),btn=el('btnAporte')
+  errEl.style.color='var(--red)'
+  if(!/^[A-Z][A-Z0-9]{3,11}$/.test(ticker)||!data||!Number.isFinite(cotas)||cotas<=0||!Number.isFinite(preco)||preco<=0){errEl.textContent='Preencha ativo, data, quantidade e preço válidos.';return}
+  if(new Date(data)>new Date()){errEl.textContent='A data não pode ser no futuro.';return}
+  portfolioBusy=true;btn.disabled=true;btn.textContent='registrando...';errEl.textContent=''
+  try{
+    await mutatePortfolio('add',[{ticker,data,cotas,preco}])
+    ;['apTicker','apData','apCotas','apPreco'].forEach(id=>{el(id).value=''})
+    await refreshPortfolio()
+    errEl.style.color='var(--green)';errEl.textContent='✓ aporte registrado!'
+  }catch(e){errEl.textContent=e.message}
+  finally{portfolioBusy=false;btn.disabled=false;btn.textContent='registrar aporte'}
 }
-
 window.removerAporte=async function(id){
-  if(!confirm('Remover este aporte?'))return
-  await sb.from('aportes').delete().eq('id',id)
-  await loadAportes()
-  const tickers=[...new Set(aportes.map(a=>a.ticker))]
-  await Promise.all(tickers.map(async ticker=>{
-    const ap=aportes.filter(a=>a.ticker===ticker)
-    if(!ap.length){await sb.from('carteira').update({ativo:false}).eq('user_id',user.id).eq('ticker',ticker);return}
-    const tc=ap.reduce((s,a)=>s+a.cotas,0),pm=ap.reduce((s,a)=>s+a.preco*a.cotas,0)/tc
-    await sb.from('carteira').update({cotas:tc,preco_medio:+pm.toFixed(4)}).eq('user_id',user.id).eq('ticker',ticker)
-  }))
-  await loadCarteira();await calcularDividendosAcumulados();renderAll()
+  if(portfolioBusy||!confirm('Remover este aporte?'))return
+  portfolioBusy=true
+  try{await mutatePortfolio('remove_aporte',[],id);await refreshPortfolio()}
+  catch(e){alert(e.message)}finally{portfolioBusy=false}
 }
-
 window.removerAtivo=async function(id){
-  if(!confirm('Remover este ativo e todos os seus aportes?'))return
-  const ativo=carteira.find(a=>a.id===id)
-  if(ativo)await sb.from('aportes').delete().eq('user_id',user.id).eq('ticker',ativo.ticker)
-  await sb.from('carteira').update({ativo:false}).eq('id',id)
-  await loadCarteira();await loadAportes();renderAll()
+  if(portfolioBusy||!confirm('Remover este ativo e todos os seus aportes?'))return
+  portfolioBusy=true
+  try{await mutatePortfolio('remove_ativo',[],id);await refreshPortfolio()}
+  catch(e){alert(e.message)}finally{portfolioBusy=false}
 }
 
 // ── IMPORTAÇÃO B3 ──────────────────────────────────────
 window.handleImportB3=async function(event){
+  if(portfolioBusy)return
   const file=event.target.files[0];if(!file)return
   const statusEl=el('importStatus');statusEl.innerHTML='<div class="import-loading">lendo arquivo...</div>'
   try{
@@ -380,7 +377,7 @@ window.handleImportB3=async function(event){
       const qtd=parseFloat(qtdRaw),preco=parseFloat(precoRaw.replace(',','.'))
       if(!qtd||!preco||isNaN(qtd)||isNaN(preco))continue
       const ticker=produto.split(' - ')[0].trim().toUpperCase()
-      if(ticker.length<4||ticker.length>7)continue
+      if(!/^[A-Z][A-Z0-9]{3,11}$/.test(ticker))continue
       let data
       try{
         if(dataStr.includes('/')){const[d,m,y]=dataStr.split('/');data=`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`}
@@ -391,47 +388,52 @@ window.handleImportB3=async function(event){
     }
     if(!aportesParsed.length){statusEl.innerHTML='<div class="import-error">Nenhuma compra encontrada. Use o extrato de <b>Movimentações</b> da B3.</div>';return}
     importPreview=aportesParsed;renderImportPreview()
-  }catch(e){statusEl.innerHTML='<div class="import-error">Erro ao ler o arquivo: '+e.message+'</div>'}
+  }catch(e){statusEl.textContent='Erro ao ler o arquivo: '+e.message}
   event.target.value=''
 }
 
 function renderImportPreview(){
   const statusEl=el('importStatus')
   const total=importPreview.reduce((s,a)=>s+a.total,0)
-  const rows=importPreview.map((a,i)=>`<div class="aporte-row" style="font-size:11px"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}c × ${fmt(a.preco)}</span><span>${new Date(a.data+'T12:00').toLocaleDateString('pt-BR')}</span><span class="green">${fmt(a.total)}</span><button class="btn-mini btn-mini-red" onclick="importPreview.splice(${i},1);renderImportPreview()">×</button></div>`).join('')
-  statusEl.innerHTML=`<div class="card" style="margin-top:.75rem"><div class="card-title">prévia — ${importPreview.length} aportes encontrados</div><div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">revise e remova linhas incorretas antes de confirmar.</div><div style="max-height:250px;overflow-y:auto">${rows}</div><div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:500;margin-bottom:.75rem"><span>total</span><span>${fmt(total)}</span></div><button class="btn btn-accent" onclick="confirmarImportacao()">confirmar importação</button><button class="btn" onclick="importPreview=[];el('importStatus').innerHTML=''">cancelar</button></div>`
+  const rows=importPreview.map((a,i)=>`<div class="aporte-row" style="font-size:11px"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}c × ${fmt(a.preco)}</span><span>${new Date(a.data+'T12:00').toLocaleDateString('pt-BR')}</span><span class="green">${fmt(a.total)}</span><button class="btn-mini btn-mini-red" onclick="removerLinhaImportacao(${i})">×</button></div>`).join('')
+  statusEl.innerHTML=`<div class="card" style="margin-top:.75rem"><div class="card-title">prévia — ${importPreview.length} aportes encontrados</div><div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">revise e remova linhas incorretas antes de confirmar.</div><div style="max-height:250px;overflow-y:auto">${rows}</div><div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:500;margin-bottom:.75rem"><span>total</span><span>${fmt(total)}</span></div><button class="btn btn-accent" onclick="confirmarImportacao()">confirmar importação</button><button class="btn" onclick="cancelarImportacao()">cancelar</button></div>`
 }
 
+window.removerLinhaImportacao=function(i){if(!portfolioBusy){importPreview.splice(i,1);renderImportPreview()}}
+window.cancelarImportacao=function(){if(!portfolioBusy){importPreview=[];el('importStatus').textContent=''}}
 window.confirmarImportacao=async function(){
+  if(portfolioBusy||!importPreview.length)return
+  portfolioBusy=true
   const btn=document.querySelector('#importStatus .btn-accent')
   if(btn){btn.textContent='importando...';btn.disabled=true}
-  let ok=0,err=0
-  for(const a of importPreview){
-    try{
-      await sb.from('aportes').insert({user_id:user.id,ticker:a.ticker,cotas:a.cotas,preco:a.preco,data:a.data})
-      const exist=carteira.find(c=>c.ticker===a.ticker)
-      if(exist){const nc=exist.cotas+a.cotas,npm=((exist.preco_medio*exist.cotas)+(a.preco*a.cotas))/nc;await sb.from('carteira').update({cotas:nc,preco_medio:+npm.toFixed(4),atualizado_em:new Date().toISOString()}).eq('id',exist.id);exist.cotas=nc;exist.preco_medio=+npm.toFixed(4)}
-      else{const tipo=tipoByTicker(a.ticker);const{data:novo}=await sb.from('carteira').insert({user_id:user.id,ticker:a.ticker,cotas:a.cotas,preco_medio:a.preco,tipo,ativo:true}).select().single();if(novo)carteira.push(novo)}
-      ok++
-    }catch(e){err++}
-  }
-  importPreview=[]
-  el('importStatus').innerHTML=`<div style="font-size:13px;color:var(--green);padding:.75rem 0">✓ ${ok} aportes importados com sucesso${err>0?` (${err} com erro)`:''}</div>`
-  await loadCarteira();await loadAportes();await Promise.all([loadQuotes(),calcularDividendosAcumulados()]);renderAll()
+  let saved=false
+  try{
+    const result=await mutatePortfolio('add',importPreview)
+    saved=true;importPreview=[]
+    el('importStatus').textContent='✓ '+result.count+' aportes importados. Atualizando carteira...'
+    await refreshPortfolio()
+    el('importStatus').textContent='✓ '+result.count+' aportes importados e carteira atualizada.'
+  }catch(e){
+    if(!saved)renderImportPreview()
+    const message=document.createElement('div');message.className='import-error';message.textContent=e.message
+    el('importStatus').appendChild(message)
+  }finally{portfolioBusy=false;if(btn){btn.disabled=false;btn.textContent='confirmar importação'}}
 }
 
 // ── RESET ──────────────────────────────────────────────
-window.abrirReset=function(){el('modalReset').style.display='flex'}
+window.abrirReset=function(){if(!portfolioBusy)el('modalReset').style.display='flex'}
 window.fecharReset=function(){el('modalReset').style.display='none';el('resetConfirm').value='';set('resetError','')}
 window.confirmarReset=async function(){
+  if(portfolioBusy)return
   if(val('resetConfirm').trim().toUpperCase()!=='CONFIRMAR'){set('resetError','digite CONFIRMAR para prosseguir.');return}
-  const btn=el('btnConfirmarReset');btn.textContent='apagando...';btn.disabled=true
-  await sb.from('aportes').delete().eq('user_id',user.id)
-  await sb.from('carteira').update({ativo:false}).eq('user_id',user.id)
-  carteira=[];aportes=[];precos={};dividendosHist={}
-  fecharReset();renderAll()
-  el('aiText').textContent='Carteira zerada. Registre seus aportes para começar.'
-  btn.textContent='sim, apagar tudo';btn.disabled=false
+  const btn=el('btnConfirmarReset');btn.textContent='apagando...';btn.disabled=true;portfolioBusy=true
+  try{
+    await mutatePortfolio('reset')
+    carteira=[];aportes=[];precos={};dividendosHist={};marketErrors={quote:'',dividends:''};showMarketStatus()
+    fecharReset();renderAll()
+    el('aiText').textContent='Carteira zerada. Registre seus aportes para começar.'
+  }catch(e){el('resetError').textContent=e.message}
+  finally{btn.textContent='sim, apagar tudo';btn.disabled=false;portfolioBusy=false}
 }
 
 // ── AI PAINEL ──────────────────────────────────────────
