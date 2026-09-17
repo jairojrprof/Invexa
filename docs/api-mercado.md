@@ -29,7 +29,7 @@ Respostas HTTP usam `private, no-store` e `Vercel-CDN-Cache-Control: no-store`. 
 
 ## Implantação
 
-1. Aplicar a migração `20260917040547_protect_market_api.sql` inteira em uma transação. Ela depende da migração de cadastro já aplicada e não modifica carteiras ou convites.
+1. Aplicar a migração `20260917151704_protect_market_api.sql` inteira em uma transação. Ela depende da migração de cadastro já aplicada e não modifica carteiras ou convites.
 2. Conferir permissões com `supabase/verification/market-api.sql` e executar o verificador de segurança.
 3. Publicar as duas rotas e o novo cliente juntos. Se o conector atribuir outra versão à migração, alinhar o nome do arquivo ao registro remoto antes do próximo deploy de banco.
 4. Verificar 401 sem sessão e consultar ativos com uma conta de teste autenticada. Confirmar erros visíveis e reutilização do cache.
@@ -45,3 +45,5 @@ O cadastro com confirmação de email e login da rodada anterior já foi validad
 Referências: [Supabase JWT](https://supabase.com/docs/guides/auth/jwts), [Runtime Cache](https://vercel.com/docs/caching/runtime-cache), [BRAPI](https://brapi.dev/docs/acoes).
 
 Validação local final: **52 testes passaram**, em Node 22.23.2 e PostgreSQL 17.10, com `--experimental-test-isolation=none` e `KEEP_TEST_DATABASE=1` por restrições do ambiente Windows. Importação dos handlers reais também passou.
+
+Migração aplicada no Supabase em 17/09/2026 como 20260917151704: RLS e privilégios verificados. Nenhum cliente pode ler ou alterar diretamente o contador; somente authenticated executa a RPC. O aviso preexistente de proteção contra senhas vazadas permanece pendente.

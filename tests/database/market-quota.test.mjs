@@ -9,7 +9,7 @@ if(!['127.0.0.1','localhost','[::1]'].includes(url.hostname))throw Error('Use LO
 const name=`invexa_market_test_${process.pid}_${Date.now()}`
 const admin=new pg.Client({connectionString:url.href})
 const local=new URL(url);local.pathname='/'+name
-const migration=fs.readFileSync(new URL('../../supabase/migrations/20260917040547_protect_market_api.sql',import.meta.url),'utf8')
+const migration=fs.readFileSync(new URL('../../supabase/migrations/20260917151704_protect_market_api.sql',import.meta.url),'utf8')
 async function connection(){const c=new pg.Client({connectionString:local.href});await c.connect();return c}
 async function asUser(db,id,kind='quote',cost=1,role='authenticated'){
   await db.query('begin')
