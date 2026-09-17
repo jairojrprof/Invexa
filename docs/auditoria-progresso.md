@@ -12,7 +12,7 @@ Base: auditoria de 15/09/2026 e código do GitHub no commit `54970b26e046be7c303
 ## Pendências da auditoria
 
 1. Auditoria do esquema e das políticas realizada pelo conector em 16/09/2026: RLS ativa nas sete tabelas; leituras privadas isoladas nos testes. Acesso público aos convites e edição do plano pelo usuário foram corrigidos, testados em banco isolado e bloqueados em produção. Migração aplicada e permissões conferidas em 16/09/2026. Cadastro, confirmação de email e login validados em produção em 17/09/2026. Detalhes em [cadastro-seguro.md](cadastro-seguro.md).
-2. Proteção de APIs de cotação/dividendos implementada e testada: sessão, cotas compartilhadas e cache por ativo. Publicação pendente; detalhes em [api-mercado.md](api-mercado.md).
+2. Proteção de APIs de cotação/dividendos implementada e testada: sessão, cotas compartilhadas e cache por ativo. Publicada em 17/09/2026; detalhes em [api-mercado.md](api-mercado.md).
 3. Revisar os demais usos de `innerHTML`, especialmente tickers, atributos de eventos, prévia de importação e mensagens de erro. A correção desta rodada é específica ao chat.
 4. Tornar aportes, carteira e importações transacionais; verificar erros antes de confirmar sucesso.
 5. Corrigir elegibilidade de dividendos, período de 12 meses, vendas e eventos de movimentação.
@@ -28,4 +28,8 @@ Os testes de interface usam um DOM mínimo e um substituto do Chart.js. Os teste
 
 ## APIs de mercado — 17/09/2026
 
-52 testes passaram em Node 22.23.2 e PostgreSQL 17.10, incluindo concorrência entre oito conexões, limites por usuário/minuto/dia, falhas de sessão/provedor/cache e preservação dos dados anteriores na interface. A migração desta rodada ainda não foi aplicada em produção.
+52 testes passaram em Node 22.23.2 e PostgreSQL 17.10, incluindo concorrência entre oito conexões, limites por usuário/minuto/dia, falhas de sessão/provedor/cache e preservação dos dados anteriores na interface. Migração 20260917151704 aplicada e PR #2 publicada em produção.
+
+## Importação após reset — 17/09/2026
+
+Causa confirmada: ativos inativos conflitam com a chave única; a interface ignorava o erro da carteira. Correção transacional e recuperação das posições pelo histórico, sem duplicar aportes. Suíte de 63 testes aprovada, com testes PostgreSQL reais. Detalhes em [importacao-carteira.md](importacao-carteira.md).
