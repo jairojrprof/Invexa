@@ -32,6 +32,7 @@ test('importação e carteira permanecem consistentes em PostgreSQL real',async 
       const p=(await c.query('select * from carteira where user_id=$1',[owner])).rows[0]
       assert.equal(p.ativo,true);assert.equal(Number(p.cotas),5);assert.equal(Number(p.preco_medio),16)
       assert.equal((await c.query('select count(*)::int n from aportes')).rows[0].n,2)
+      await c.query(fs.readFileSync(new URL('../../supabase/migrations/20260918023132_b3_splits_and_reconciliation.sql',import.meta.url),'utf8'))
     })
     await t.test('reset e reimportação reativam sem somar saldo anterior',async()=>{
       await mutate(c,owner,'reset');await mutate(c,owner,'add',[row(),row('PETR4',3,20),row('MXRF11',4,12)])

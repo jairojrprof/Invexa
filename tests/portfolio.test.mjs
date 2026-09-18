@@ -3,6 +3,15 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import vm from 'node:vm'
 import {createPortfolioClient} from '../portfolio-client.js'
+import {importWarnings} from '../b3-import.js'
+test('cliente envia origem B3 e explica conflitos sem expor detalhes do banco',async()=>{
+  let sent,fail=false
+  const sb={auth:{getSession:async()=>({data:{session:{user:{id:'owner'}}}})},rpc:async(_,p)=>{sent=p;return fail?{error:{message:'B3_SPLIT_CONFLICT'}}:{data:{ok:true,splits:1,count:0}}}}
+  const mutate=createPortfolioClient(sb,()=> 'request')
+  await mutate('import_b3',[{kind:'split',ticker:'TEST3',cotas:2,preco:0,data:'2024-02-01',instituicao:'BROKER',total:0}])
+  assert.equal(sent.p_entries[0].kind,'split');assert.equal(sent.p_entries[0].instituicao,'BROKER');assert.equal(sent.p_entries[0].total,undefined)
+  fail=true;await assert.rejects(mutate('import_b3',[]),/outra quantidade/)
+})
 test('cliente verifica erro retornado, reutiliza pedido após falha e separa contas',async()=>{
   let calls=[],fail=true,account='a',id=0
   const sb={auth:{getSession:async()=>({data:{session:{user:{id:account}}}})},rpc:async(_,p)=>{calls.push(p);return fail?{error:{message:'duplicate'}}:{data:{ok:true,count:1}}}}
@@ -13,9 +22,17 @@ test('cliente verifica erro retornado, reutiliza pedido após falha e separa con
   fail=true;await assert.rejects(mutate('add',entries));account='b';await assert.rejects(mutate('add',entries));assert.notEqual(calls[3].p_request_id,calls[4].p_request_id)
 })
 const html=fs.readFileSync(new URL('../index.html',import.meta.url),'utf8')
+test('prévia distingue desdobro de compra e mantém aviso de linhas não processadas',()=>{
+  const status={innerHTML:'',children:[],appendChild(n){this.children.push(n)}}
+  const ctx=vm.createContext({importWarnings,document:{createElement:()=>({})},el:()=>status,fmt:n=>String(n),
+    importPreview:[{kind:'split',ticker:'TEST3',cotas:4,preco:0,total:0,data:'2024-02-01'}],importIgnored:[{reason:'Renda fixa não processada',lines:[3]}]})
+  vm.runInContext(html.slice(html.indexOf('function renderImportPreview(){'),html.indexOf('window.removerLinhaImportacao='))+'\nrenderImportPreview()',ctx)
+  assert.match(status.innerHTML,/desdobramento: \+4 unidades/);assert.match(status.innerHTML,/0 compras e 1 desdobramentos/)
+  assert.match(status.children[0].textContent,/Renda fixa não processada/)
+})
 function ui(mutate){
   const nodes={importStatus:{children:[],textContent:'',appendChild(n){this.children.push(n)}},button:{}}
-  const ctx=vm.createContext({window:{},document:{querySelector:()=>nodes.button,createElement:()=>({})},el:id=>nodes[id],mutatePortfolio:mutate,refreshPortfolio:async()=>{},renderImportPreview:()=>{nodes.importStatus.textContent='prévia'}})
+  const ctx=vm.createContext({window:{},importWarnings,importIgnored:[],document:{querySelector:()=>nodes.button,createElement:()=>({})},el:id=>nodes[id],mutatePortfolio:mutate,refreshPortfolio:async()=>{},renderImportPreview:()=>{nodes.importStatus.textContent='prévia'}})
   vm.runInContext("let portfolioBusy=false,importPreview=[{ticker:'PETR4',cotas:2,preco:10,data:'2026-01-10'}];",ctx)
   vm.runInContext(html.slice(html.indexOf('window.confirmarImportacao=async function(){'),html.indexOf('// ── RESET')),ctx)
   return {ctx,nodes}
