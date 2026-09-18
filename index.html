@@ -15,10 +15,11 @@ import { createAIClient } from './ai-client.js'
 import { appendChatMessage } from './chat-ui.js'
 import { createSignupClient } from './signup-client.js'
 import { createMarketClient } from './market-client.js'
+import { parseB3Rows, importWarnings } from './b3-import.js'
 import { createPortfolioClient } from './portfolio-client.js'
 import { startAuthLifecycle } from './auth-lifecycle.js'
 const mutatePortfolio = createPortfolioClient(sb)
-let portfolioBusy=false
+let portfolioBusy=false,importIgnored=[]
 const signupClient = createSignupClient(sb)
 const aiClient = createAIClient(sb)
 const marketClient = createMarketClient(sb)
@@ -329,41 +330,15 @@ window.removerAtivo=async function(id){
 window.handleImportB3=async function(event){
   if(portfolioBusy)return
   const file=event.target.files[0];if(!file)return
+  importPreview=[];importIgnored=[]
   const statusEl=el('importStatus');statusEl.innerHTML='<div class="import-loading">lendo arquivo...</div>'
   try{
     const buf=await file.arrayBuffer()
     const wb=XLSX.read(buf,{type:'array'})
     const ws=wb.Sheets[wb.SheetNames[0]]
     const rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''})
-    if(!rows.length){statusEl.innerHTML='<div class="import-error">Arquivo vazio.</div>';return}
-    const header=rows[0].map(h=>(h||'').toString().trim().toLowerCase())
-    const idx={entrada:header.indexOf('entrada/saída'),data:header.indexOf('data'),mov:header.indexOf('movimentação'),produto:header.indexOf('produto'),qtd:header.indexOf('quantidade'),preco:header.indexOf('preço unitário')}
-    const aportesParsed=[]
-    for(let i=1;i<rows.length;i++){
-      const row=rows[i]
-      const entrada=(row[idx.entrada]||'').toString().trim().toLowerCase()
-      const mov=(row[idx.mov]||'').toString().trim().toLowerCase()
-      const produto=(row[idx.produto]||'').toString().trim()
-      const dataStr=(row[idx.data]||'').toString().trim()
-      const qtdRaw=(row[idx.qtd]||'').toString().trim()
-      const precoRaw=(row[idx.preco]||'').toString().trim()
-      if(entrada!=='credito')continue
-      if(!mov.includes('transferência - liquidação'))continue
-      if(!precoRaw||precoRaw==='-')continue
-      const qtd=parseFloat(qtdRaw),preco=parseFloat(precoRaw.replace(',','.'))
-      if(!qtd||!preco||isNaN(qtd)||isNaN(preco))continue
-      const ticker=produto.split(' - ')[0].trim().toUpperCase()
-      if(!/^[A-Z][A-Z0-9]{3,11}$/.test(ticker))continue
-      let data
-      try{
-        if(dataStr.includes('/')){const[d,m,y]=dataStr.split('/');data=`${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`}
-        else if(dataStr.includes('-')){data=dataStr.substring(0,10)}else continue
-        if(isNaN(new Date(data).getTime()))continue
-      }catch(e){continue}
-      aportesParsed.push({ticker,data,cotas:qtd,preco,total:+(qtd*preco).toFixed(2)})
-    }
-    if(!aportesParsed.length){statusEl.innerHTML='<div class="import-error">Nenhuma compra encontrada. Use o extrato de <b>Movimentações</b> da B3.</div>';return}
-    importPreview=aportesParsed;renderImportPreview()
+    const parsed=parseB3Rows(rows)
+    importPreview=parsed.entries;importIgnored=parsed.ignored;renderImportPreview()
   }catch(e){statusEl.textContent='Erro ao ler o arquivo: '+e.message}
   event.target.value=''
 }
@@ -371,8 +346,11 @@ window.handleImportB3=async function(event){
 function renderImportPreview(){
   const statusEl=el('importStatus')
   const total=importPreview.reduce((s,a)=>s+a.total,0)
-  const rows=importPreview.map((a,i)=>`<div class="aporte-row" style="font-size:11px"><span class="fw">${a.ticker}</span><span class="muted">${a.cotas}c × ${fmt(a.preco)}</span><span>${new Date(a.data+'T12:00').toLocaleDateString('pt-BR')}</span><span class="green">${fmt(a.total)}</span><button class="btn-mini btn-mini-red" onclick="removerLinhaImportacao(${i})">×</button></div>`).join('')
-  statusEl.innerHTML=`<div class="card" style="margin-top:.75rem"><div class="card-title">prévia — ${importPreview.length} aportes encontrados</div><div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">revise e remova linhas incorretas antes de confirmar.</div><div style="max-height:250px;overflow-y:auto">${rows}</div><div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:500;margin-bottom:.75rem"><span>total</span><span>${fmt(total)}</span></div><button class="btn btn-accent" onclick="confirmarImportacao()">confirmar importação</button><button class="btn" onclick="cancelarImportacao()">cancelar</button></div>`
+  const rows=importPreview.map((a,i)=>`<div class="aporte-row" style="font-size:11px"><span class="fw">${a.ticker}</span><span class="muted">${a.kind==='split'?'desdobramento: +'+a.cotas+' unidades':a.cotas+'c × '+fmt(a.preco)}</span><span>${new Date(a.data+'T12:00').toLocaleDateString('pt-BR')}</span><span class="green">${fmt(a.total)}</span><button class="btn-mini btn-mini-red" onclick="removerLinhaImportacao(${i})">×</button></div>`).join('')
+  statusEl.innerHTML=`<div class="card" style="margin-top:.75rem"><div class="card-title">prévia — ${importPreview.filter(a=>a.kind==='purchase').length} compras e ${importPreview.filter(a=>a.kind==='split').length} desdobramentos</div><div style="font-size:11px;color:var(--muted);margin-bottom:.75rem">Revise antes de confirmar. Compras já registradas serão reconhecidas; desdobramentos acrescentam unidades sem aumentar o valor investido. Use todas as movimentações de cada dia para reconhecer compras iguais.</div><div style="max-height:250px;overflow-y:auto">${rows}</div><div class="divider"></div><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:500;margin-bottom:.75rem"><span>compras no arquivo</span><span>${fmt(total)}</span></div><button class="btn btn-accent" onclick="confirmarImportacao()" ${importPreview.length?'':'disabled'}>confirmar importação</button><button class="btn" onclick="cancelarImportacao()">cancelar</button></div>`
+  const warning=document.createElement('p');warning.className='import-error'
+  warning.textContent=importWarnings(importIgnored)
+  if(warning.textContent)statusEl.appendChild(warning)
 }
 
 window.removerLinhaImportacao=function(i){if(!portfolioBusy){importPreview.splice(i,1);renderImportPreview()}}
@@ -384,11 +362,13 @@ window.confirmarImportacao=async function(){
   if(btn){btn.textContent='importando...';btn.disabled=true}
   let saved=false
   try{
-    const result=await mutatePortfolio('add',importPreview)
+    const result=await mutatePortfolio('import_b3',importPreview)
+    const summary=result.count+' novas compras; '+(result.splits||0)+' desdobramentos; '+((result.existing||0)+(result.linked||0))+' registros já existentes.'
+    const warning=importWarnings(importIgnored)
     saved=true;importPreview=[]
-    el('importStatus').textContent='✓ '+result.count+' aportes importados. Atualizando carteira...'
+    el('importStatus').textContent='✓ '+summary+' Atualizando carteira...'
     await refreshPortfolio()
-    el('importStatus').textContent='✓ '+result.count+' aportes importados e carteira atualizada.'
+    el('importStatus').textContent='✓ '+summary+' carteira atualizada. '+warning
   }catch(e){
     if(!saved)renderImportPreview()
     const message=document.createElement('div');message.className='import-error';message.textContent=e.message
@@ -578,7 +558,7 @@ a{color:var(--accent);text-decoration:none}
   <!-- PAINEL -->
   <div id="painel" class="section active">
     <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-label">patrimônio estimado</div><div class="kpi-val" id="kpiPatrimonio">—</div></div>
+      <div class="kpi"><div class="kpi-label">patrimônio estimado · renda variável</div><div class="kpi-val" id="kpiPatrimonio">—</div></div>
       <div class="kpi"><div class="kpi-label">resultado em cota</div><div class="kpi-val" id="kpiResult">—</div><div class="kpi-sub" id="kpiResultPct"></div></div>
       <div class="kpi"><div class="kpi-label">dividendos recebidos</div><div class="kpi-val green" id="kpiAcumulado">—</div><div class="kpi-sub" id="kpiRetornoReal"></div></div>
       <div class="kpi"><div class="kpi-label">dividendos/mês est.</div><div class="kpi-val" id="kpiDiv">—</div><div class="kpi-sub muted" id="kpiDY"></div></div>
@@ -658,7 +638,7 @@ a{color:var(--accent);text-decoration:none}
     </div>
     <div class="card">
       <div class="card-title">como exportar o extrato da B3</div>
-      <div style="font-size:12px;color:var(--muted);line-height:1.8">1. Acesse <b style="color:var(--text)">investidor.b3.com.br</b><br>2. Faça login<br>3. Vá em <b style="color:var(--text)">Extratos → Movimentações</b><br>4. Selecione o período<br>5. <b style="color:var(--text)">Exportar → Excel (.xlsx)</b><br>6. Importe aqui</div>
+      <div style="font-size:12px;color:var(--muted);line-height:1.8">Importa compras e desdobramentos de renda variável. Renda fixa e outros movimentos serão informados como não processados.<br><br>1. Acesse <b style="color:var(--text)">investidor.b3.com.br</b><br>2. Faça login<br>3. Vá em <b style="color:var(--text)">Extratos → Movimentações</b><br>4. Selecione o período<br>5. <b style="color:var(--text)">Exportar → Excel (.xlsx)</b><br>6. Importe aqui</div>
     </div>
   </div>
 
