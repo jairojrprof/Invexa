@@ -20,6 +20,6 @@ Excluir uma compra anterior a um desdobramento é bloqueado para não deixar uni
 
 ## Implantação e validação
 
-Aplicar `20260917215439_b3_splits_and_reconciliation.sql` antes do frontend. A assinatura pública da operação anterior é preservada; aportes manuais continuam usando `add`. As tabelas auxiliares ficam no schema privado, com RLS e sem acesso direto. As gravações em aportes e carteira passam exclusivamente pela operação atômica.
+Aplicar `20260918023132_b3_splits_and_reconciliation.sql` antes do frontend. A assinatura pública da operação anterior é preservada; aportes manuais continuam usando `add`. As tabelas auxiliares ficam no schema privado, com RLS e sem acesso direto. As gravações em aportes e carteira passam exclusivamente pela operação atômica.
 
 Os testes com PostgreSQL local cobrem conciliação do legado, preservação de custo, multiplicidade, reimportação, concorrência, rollback, exclusões, reset, autenticação e isolamento entre contas. Dados pessoais e extratos reais não fazem parte dos testes versionados.

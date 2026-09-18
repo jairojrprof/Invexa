@@ -26,7 +26,7 @@ test('B3 reconcilia histórico e eventos sem duplicar nem alterar custo',async t
     for(const file of ['20260916225659_secure_invite_signup.sql','20260917155311_atomic_portfolio_import.sql'])await c.query(fs.readFileSync(new URL('../../supabase/migrations/'+file,import.meta.url),'utf8'))
     await mutate(c,owner,'add',[purchase(),purchase(1,15,'2024-03-10')])
     const before=(await c.query('select id,cotas,preco,data::text,total from aportes where user_id=$1 order by id',[owner])).rows
-    await c.query(fs.readFileSync(new URL('../../supabase/migrations/20260917215439_b3_splits_and_reconciliation.sql',import.meta.url),'utf8'))
+    await c.query(fs.readFileSync(new URL('../../supabase/migrations/20260918023132_b3_splits_and_reconciliation.sql',import.meta.url),'utf8'))
     const batch=[split(),purchase(),purchase(1,15,'2024-03-10')]
     const position=async user=>(await c.query("select * from carteira where user_id=$1 and ticker='TEST3'",[user])).rows[0]
     await t.test('reconhece legado, aplica unidades adicionais e preserva cada compra',async()=>{
